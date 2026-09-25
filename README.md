@@ -4,6 +4,36 @@ Local dashboard for end-to-end test flows: describe a scope in plain words, let 
 prove a Playwright spec against a real environment, save it as a template, replay it against any
 base URL, and post the step-by-step screenshot report to Slack.
 
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/OctopusRage/qa-flow/main/install.sh | bash
+```
+
+Needs Node.js 22.13+, pnpm (enabled through corepack if missing) and git. It clones to `~/.qa-flow`,
+installs dependencies and Chromium, builds the dashboard, links `~/.local/bin/qa-flow` and starts it on
+http://127.0.0.1:4777. Run it again to update. Options go after `bash -s --`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/OctopusRage/qa-flow/main/install.sh | bash -s -- --service --mcp
+```
+
+| Option | |
+|---|---|
+| `--service` | systemd user service that starts with your session (Linux) |
+| `--mcp` | add the MCP server to Claude Code (user scope) |
+| `--no-start` | install only |
+| `--dir <path>` / `--ref <branch>` | install folder (default `~/.qa-flow`) / git ref (default `main`) |
+
+```
+qa-flow open | start | stop | restart | status | logs | update | mcp-install | run
+```
+
+AI generation uses your Claude Code login (`curl -fsSL https://claude.ai/install.sh | bash`) or an
+Anthropic API key set in Settings.
+
+## Develop
+
 ```
 pnpm install
 pnpm start            # builds the UI, serves http://127.0.0.1:4777

@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# qa-flow launcher, symlinked into ~/.local/bin by install.sh.
+set -euo pipefail
+
+# Resolve the app folder through the symlink.
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do
+  DIR="$(cd -P "$(dirname "$SELF")" && pwd)"
+  SELF="$(readlink "$SELF")"
+  [[ $SELF != /* ]] && SELF="$DIR/$SELF"
+done
+APP="$(cd -P "$(dirname "$SELF")/.." && pwd)"
+
+PORT="${PORT:-4777}"
+HOST="${HOST:-127.0.0.1}"
+DATA="$APP/data"
+PIDFILE="$DATA/server.pid"
+LOG="$DATA/server.log"
+URL="http://127.0.0.1:$PORT"
+mkdir -p "$DATA"
+
+bold() { printf '\033[1m%s\033[0m\n' "$*"; }
+running() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; }
+service_active() { command -v systemctl >/dev/null && systemctl --user is-active --quiet qa-flow 2>/dev/null; }
+
+start() {
+  if service_active; then echo "qa-flow runs as a systemd user service: $URL"; return; fi
+  if running; then echo "qa-flow is already running (pid $(cat "$PIDFILE")): $URL"; return; fi
+  [ -d "$APP/dist" ] || (cd "$APP" && pnpm run build >/dev/null)
+  cd "$APP"
+  PORT="$PORT" HOST="$HOST" nohup "$APP/node_modules/.bin/tsx" server/index.ts >>"$LOG" 2>&1 &
+  echo $! >"$PIDFILE"
+  for _ in $(seq 1 40); do
+    if curl -fsS -o /dev/null "$URL/api/dashboard" 2>/dev/null; then
+      bold "qa-flow is running: $URL"
+      echo "MCP endpoint:  $URL/mcp"
+      return
+    fi
+    running || break
+    sleep 0.25
+  done
+  echo "qa-flow did not start. Last log lines:" >&2
+  tail -n 20 "$LOG" >&2
+  exit 1
+}
+
+stop() {
+  if service_active; then systemctl --user stop qa-flow && echo "Stopped the qa-flow service"; return; fi
+  if running; then
+    kill "$(cat "$PIDFILE")" && rm -f "$PIDFILE"
+    echo "Stopped qa-flow"
+  else
+    rm -f "$PIDFILE"
+    echo "qa-flow is not running"
+  fi
+}
+
+status() {
+  if service_active || running; then
+    echo "running: $URL  (MCP: $URL/mcp)"
+  else
+    echo "stopped"
+    return 1
+  fi
+}
+
+open_ui() {
+  status >/dev/null || start
+  if command -v xdg-open >/dev/null; then xdg-open "$URL" >/dev/null 2>&1 &
+  elif command -v open >/dev/null; then open "$URL"
+  else echo "$URL"; fi
+}
+
+update() {
+  cd "$APP"
+  git pull --ff-only
+  pnpm install --frozen-lockfile
+  pnpm run build
+  if service_active; then systemctl --user restart qa-flow
+  elif running; then stop && start; fi
+  bold "qa-flow updated to $(git rev-parse --short HEAD)"
+}
+
+mcp_install() {
+  command -v claude >/dev/null || { echo "The claude CLI is not installed: https://claude.ai/install.sh" >&2; exit 1; }
+  claude mcp remove qa-flow --scope user >/dev/null 2>&1 || true
+  claude mcp add --transport http --scope user qa-flow "$URL/mcp"
+}
+
+usage() {
+  cat <<EOF
+qa-flow: local AI-to-Playwright test flows
+
+  qa-flow start          start the server in the background ($URL)
+  qa-flow stop           stop it
+  qa-flow restart        restart it
+  qa-flow status         show whether it is running
+  qa-flow open           open the dashboard in a browser (starts it if needed)
+  qa-flow logs           follow the server log
+  qa-flow update         pull the latest version, rebuild, restart
+  qa-flow mcp-install    add the MCP server to Claude Code (user scope)
+  qa-flow run            run in the foreground (for debugging)
+
+Env: PORT (default 4777), HOST (default 127.0.0.1). App folder: $APP
+EOF
+}
+
+case "${1:-help}" in
+  start) start ;;
+  stop) stop ;;
+  restart) stop; start ;;
+  status) status ;;
+  open) open_ui ;;
+  logs) tail -n 50 -f "$LOG" ;;
+  update) update ;;
+  mcp-install) mcp_install ;;
+  run) cd "$APP" && PORT="$PORT" HOST="$HOST" exec "$APP/node_modules/.bin/tsx" server/index.ts ;;
+  -v|--version|version) (cd "$APP" && git rev-parse --short HEAD 2>/dev/null) || echo unknown ;;
+  *) usage ;;
+esac
