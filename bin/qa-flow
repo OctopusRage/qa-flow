@@ -21,10 +21,56 @@ mkdir -p "$DATA"
 
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 running() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; }
-service_active() { command -v systemctl >/dev/null && systemctl --user is-active --quiet qa-flow 2>/dev/null; }
+LAUNCHD="gui/$(id -u)/com.qaflow.server"
+PLIST="$HOME/Library/LaunchAgents/com.qaflow.server.plist"
+# Installed with --service: systemd user unit (Linux) or launchd agent (macOS).
+service_kind() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    [ -f "$PLIST" ] && echo launchd
+  elif command -v systemctl >/dev/null && systemctl --user cat qa-flow >/dev/null 2>&1; then
+    echo systemd
+  fi
+  return 0
+}
+service_active() {
+  case "$(service_kind)" in
+    systemd) systemctl --user is-active --quiet qa-flow ;;
+    launchd) launchctl print "$LAUNCHD" 2>/dev/null | grep -q 'state = running' ;;
+    *) return 1 ;;
+  esac
+}
+service_start() {
+  case "$(service_kind)" in
+    systemd) systemctl --user start qa-flow ;;
+    launchd) launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null || launchctl kickstart "$LAUNCHD" ;;
+  esac
+}
+service_stop() {
+  case "$(service_kind)" in
+    systemd) systemctl --user stop qa-flow ;;
+    launchd) launchctl bootout "$LAUNCHD" 2>/dev/null || true ;;
+  esac
+}
+wait_up() {
+  for _ in $(seq 1 40); do
+    curl -fsS -o /dev/null "$URL/api/dashboard" 2>/dev/null && return 0
+    sleep 0.25
+  done
+  return 1
+}
 
 start() {
-  if service_active; then echo "qa-flow runs as a systemd user service: $URL"; return; fi
+  if [ -n "$(service_kind)" ]; then
+    service_active || service_start
+    if wait_up; then
+      bold "qa-flow is running ($(service_kind) service): $URL"
+      echo "MCP endpoint:  $URL/mcp"
+      return
+    fi
+    echo "The $(service_kind) service did not come up. Last log lines:" >&2
+    tail -n 20 "$LOG" >&2
+    exit 1
+  fi
   if running; then echo "qa-flow is already running (pid $(cat "$PIDFILE")): $URL"; return; fi
   [ -d "$APP/dist" ] || (cd "$APP" && pnpm run build >/dev/null)
   cd "$APP"
@@ -45,7 +91,7 @@ start() {
 }
 
 stop() {
-  if service_active; then systemctl --user stop qa-flow && echo "Stopped the qa-flow service"; return; fi
+  if [ -n "$(service_kind)" ]; then service_stop && echo "Stopped the qa-flow $(service_kind) service"; return; fi
   if running; then
     kill "$(cat "$PIDFILE")" && rm -f "$PIDFILE"
     echo "Stopped qa-flow"
@@ -76,8 +122,7 @@ update() {
   git pull --ff-only
   pnpm install --frozen-lockfile
   pnpm run build
-  if service_active; then systemctl --user restart qa-flow
-  elif running; then stop && start; fi
+  if service_active || running; then stop && start; fi
   bold "qa-flow updated to $(git rev-parse --short HEAD)"
 }
 

@@ -4,7 +4,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/OctopusRage/qa-flow/main/install.sh | bash
 #
 # Options (pass after `bash -s --`):
-#   --service       also install and start a systemd user service (Linux)
+#   --service       also run it as a login service (systemd on Linux, launchd on macOS)
 #   --mcp           add the MCP server to Claude Code (user scope)
 #   --no-start      do not start the server at the end
 #   --dir <path>    install folder (default ~/.qa-flow, or $QA_FLOW_DIR)
@@ -113,18 +113,68 @@ ln -sf "$DIR/bin/qa-flow" "$BIN_DIR/qa-flow"
 ok "$BIN_DIR/qa-flow"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
-  *) warn "$BIN_DIR is not on your PATH. Add it: echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> ~/.bashrc  (fish: fish_add_path $BIN_DIR)" ;;
+  *)
+    case "${SHELL##*/}" in
+      zsh) RC="$HOME/.zshrc" ;;
+      bash) if [ "$(uname -s)" = "Darwin" ]; then RC="$HOME/.bash_profile"; else RC="$HOME/.bashrc"; fi ;;
+      *) RC="$HOME/.profile" ;;
+    esac
+    if [ "${SHELL##*/}" = "fish" ]; then
+      warn "$BIN_DIR is not on your PATH. Run: fish_add_path $BIN_DIR"
+    else
+      warn "$BIN_DIR is not on your PATH. Run: echo 'export PATH=\"$BIN_DIR:\$PATH\"' >> $RC  then open a new terminal"
+    fi
+    ;;
 esac
 
 # ---- service (optional) ------------------------------------------------------------
 if [ "$SERVICE" = 1 ]; then
-  step "Installing the systemd user service"
-  command -v systemctl >/dev/null || die "--service needs systemd"
-  UNIT_DIR="$HOME/.config/systemd/user"
-  mkdir -p "$UNIT_DIR"
   NODE_BIN="$(command -v node)"
   CLAUDE_DIR="$(dirname "$(command -v claude 2>/dev/null || echo "$BIN_DIR/claude")")"
-  cat >"$UNIT_DIR/qa-flow.service" <<EOF
+  SVC_PATH="$(dirname "$NODE_BIN"):$CLAUDE_DIR:$BIN_DIR:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+  mkdir -p "$DIR/data"
+  # A background copy started by `qa-flow start` would hold the port.
+  "$DIR/bin/qa-flow" stop >/dev/null 2>&1 || true
+
+  if [ "$(uname -s)" = "Darwin" ]; then
+    step "Installing the launchd agent"
+    PLIST="$HOME/Library/LaunchAgents/com.qaflow.server.plist"
+    mkdir -p "$(dirname "$PLIST")"
+    cat >"$PLIST" <<PLIST_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.qaflow.server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$NODE_BIN</string>
+    <string>$DIR/node_modules/tsx/dist/cli.mjs</string>
+    <string>server/index.ts</string>
+  </array>
+  <key>WorkingDirectory</key><string>$DIR</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PORT</key><string>$PORT</string>
+    <key>PATH</key><string>$SVC_PATH</string>
+    <key>HOME</key><string>$HOME</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>StandardOutPath</key><string>$DIR/data/server.log</string>
+  <key>StandardErrorPath</key><string>$DIR/data/server.log</string>
+</dict>
+</plist>
+PLIST_EOF
+    launchctl bootout "gui/$(id -u)/com.qaflow.server" >/dev/null 2>&1 || true
+    launchctl bootstrap "gui/$(id -u)" "$PLIST"
+    ok "com.qaflow.server loaded (starts at login)"
+  else
+    step "Installing the systemd user service"
+    command -v systemctl >/dev/null || die "--service needs systemd (Linux) or launchd (macOS)"
+    UNIT_DIR="$HOME/.config/systemd/user"
+    mkdir -p "$UNIT_DIR"
+    cat >"$UNIT_DIR/qa-flow.service" <<UNIT_EOF
 [Unit]
 Description=QA Flow (local AI-to-Playwright test flows)
 After=network-online.target
@@ -133,21 +183,19 @@ After=network-online.target
 WorkingDirectory=$DIR
 ExecStart=$NODE_BIN $DIR/node_modules/tsx/dist/cli.mjs server/index.ts
 Environment=PORT=$PORT
-Environment=PATH=$(dirname "$NODE_BIN"):$CLAUDE_DIR:$BIN_DIR:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=$SVC_PATH
 Restart=on-failure
 StandardOutput=append:$DIR/data/server.log
 StandardError=append:$DIR/data/server.log
 
 [Install]
 WantedBy=default.target
-EOF
-  mkdir -p "$DIR/data"
-  # A background copy started by `qa-flow start` would hold the port.
-  "$DIR/bin/qa-flow" stop >/dev/null 2>&1 || true
-  systemctl --user daemon-reload
-  systemctl --user enable --now qa-flow >/dev/null 2>&1
-  systemctl --user restart qa-flow
-  ok "qa-flow.service enabled (starts with your session)"
+UNIT_EOF
+    systemctl --user daemon-reload
+    systemctl --user enable --now qa-flow >/dev/null 2>&1
+    systemctl --user restart qa-flow
+    ok "qa-flow.service enabled (starts with your session)"
+  fi
   START=0
 fi
 
