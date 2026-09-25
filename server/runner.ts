@@ -13,9 +13,11 @@ import {
   type Run,
   type RunStatus,
   type RunSummary,
+  type TokenUsage,
   type Variable,
 } from './db.ts';
 import { generateSpec } from './agent.ts';
+import { MB, fmtBytes, sample } from './resources.ts';
 
 const PW_CLI = join(ROOT, 'node_modules', '@playwright', 'test', 'cli.js');
 const HARNESS = join(ROOT, 'harness');
@@ -27,7 +29,10 @@ export const runDir = (id: number) => join(RUNS_DIR, String(id));
 export const events = new EventEmitter();
 events.setMaxListeners(100);
 
-export type RunEvent = { runId: number; type: 'log'; line: string } | { runId: number; type: 'status'; status: RunStatus };
+export type RunEvent =
+  | { runId: number; type: 'log'; line: string }
+  | { runId: number; type: 'status'; status: RunStatus }
+  | { runId: number; type: 'usage'; tokens: TokenUsage; costUsd: number | null };
 
 export function log(runId: number, line: string) {
   const text = line.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '');
@@ -40,52 +45,159 @@ function setStatus(runId: number, status: RunStatus, patch: Partial<Run> = {}) {
   events.emit('event', { runId, type: 'status', status } satisfies RunEvent);
 }
 
-// ---- queue ----------------------------------------------------------------
+// ---- scheduler ----------------------------------------------------------------
+//
+// Runs start in queue order. Whether the next one may start now depends on the concurrency
+// setting: "fixed" allows maxConcurrent at once; "auto" also needs spare CPU and enough
+// available memory for the new run's estimated footprint, counting what recently started
+// runs will still grow into. One run may always start, so a busy machine queues rather than stalls.
+
+type Active = { runId: number; abort: AbortController; child?: ChildProcess; mode: Run['mode']; templateId: number | null; startedAt: number; costMb: number };
 
 const queue: number[] = [];
-let active: { runId: number; abort: AbortController; child?: ChildProcess } | null = null;
+const active = new Map<number, Active>();
+const waiting = new Map<number, string>();
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+// A run's browser and agent processes take a while to reach full size.
+const WARMUP_MS = 45_000;
+
+/** Rough peak memory of one run: Chromium per Playwright worker, plus the Claude agent when generating. */
+export function estimateMb(mode: Run['mode'], workers: number) {
+  return (mode === 'generate' ? 900 : 300) + 450 * Math.max(1, workers);
+}
+
+type Admission = { ok: true } | { ok: false; reason: string; blocksQueue: boolean };
+
+function admit(run: Run): Admission {
+  const s = getSettings();
+  const cap = Math.max(1, s.maxConcurrent);
+  if (active.size >= cap) return { ok: false, reason: cap === 1 ? 'The run slot is busy (limit 1)' : `All ${cap} run slots are busy`, blocksQueue: true };
+  if (run.template_id && [...active.values()].some((a) => a.templateId === run.template_id)) {
+    // Two runs of one flow would share the same test accounts and data on the target.
+    return { ok: false, reason: 'Waiting for the running copy of this template to finish', blocksQueue: false };
+  }
+  if (active.size === 0 || s.concurrencyMode === 'fixed') return { ok: true };
+
+  const r = sample();
+  if (r.cpuPercent > s.cpuLimitPercent) return { ok: false, reason: `CPU busy (${r.cpuPercent}% > ${s.cpuLimitPercent}% limit)`, blocksQueue: true };
+  const now = Date.now();
+  // Runs still warming up have not claimed their memory yet: reserve the rest of their estimate.
+  const reserved = [...active.values()].reduce((sum, a) => sum + (now - a.startedAt < WARMUP_MS ? a.costMb * MB * (1 - (now - a.startedAt) / WARMUP_MS) : 0), 0);
+  const need = estimateMb(run.mode, s.workers) * MB;
+  const spare = r.memAvailable - reserved - s.memoryHeadroomMb * MB;
+  if (spare < need) {
+    return { ok: false, reason: `Low memory (${fmtBytes(Math.max(0, r.memAvailable - reserved))} free, needs ${fmtBytes(need)} + ${fmtBytes(s.memoryHeadroomMb * MB)} headroom)`, blocksQueue: true };
+  }
+  return { ok: true };
+}
 
 export function enqueue(runId: number) {
   mkdirSync(runDir(runId), { recursive: true });
   queue.push(runId);
-  log(runId, `Queued (${queue.length} in queue)`);
-  void pump();
+  log(runId, `Queued (${queue.length} waiting, ${active.size} running)`);
+  pump();
 }
 
 export function cancel(runId: number): boolean {
   const i = queue.indexOf(runId);
   if (i >= 0) {
     queue.splice(i, 1);
+    waiting.delete(runId);
     setStatus(runId, 'canceled', { finished_at: now() });
     log(runId, 'Canceled before start');
+    pump();
     return true;
   }
-  if (active?.runId === runId) {
-    active.abort.abort();
-    active.child?.kill('SIGTERM');
+  const a = active.get(runId);
+  if (a) {
+    a.abort.abort();
+    a.child?.kill('SIGTERM');
     return true;
   }
   return false;
 }
 
-export const queueState = () => ({ active: active?.runId ?? null, queued: [...queue] });
+export const isActive = (runId: number) => active.has(runId);
 
-async function pump() {
-  if (active || !queue.length) return;
-  const runId = queue.shift()!;
-  active = { runId, abort: new AbortController() };
-  try {
-    await execute(runId, active.abort);
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    log(runId, `✖ ${message}`);
-    setStatus(runId, active.abort.signal.aborted ? 'canceled' : 'error', { error: message, finished_at: now() });
-  } finally {
-    // Secret values only live in the environment, but drop anything a spec may have written.
-    rmSync(join(runDir(runId), 'scratch'), { recursive: true, force: true });
-    active = null;
-    void pump();
+export function queueState() {
+  return {
+    running: [...active.keys()],
+    queued: [...queue],
+    waiting: Object.fromEntries(queue.map((id) => [id, waiting.get(id) ?? 'Next in line'])),
+  };
+}
+
+export function schedulerState() {
+  const s = getSettings();
+  return {
+    mode: s.concurrencyMode,
+    maxConcurrent: s.maxConcurrent,
+    memoryHeadroomMb: s.memoryHeadroomMb,
+    cpuLimitPercent: s.cpuLimitPercent,
+    resources: sample(),
+    running: [...active.values()].map((a) => ({ runId: a.runId, mode: a.mode, startedAt: new Date(a.startedAt).toISOString(), estimateMb: a.costMb })),
+    queued: queue.map((id) => ({ runId: id, reason: waiting.get(id) ?? 'Next in line' })),
+  };
+}
+
+function noteWaiting(runId: number, reason: string) {
+  if (waiting.get(runId) === reason) return;
+  waiting.set(runId, reason);
+  log(runId, `⏳ ${reason}`);
+}
+
+function pump() {
+  clearTimeout(retryTimer);
+  for (let i = 0; i < queue.length; ) {
+    const run = getRun(queue[i]);
+    if (!run || run.status !== 'queued') {
+      queue.splice(i, 1);
+      continue;
+    }
+    const verdict = admit(run);
+    if (verdict.ok) {
+      queue.splice(i, 1);
+      waiting.delete(run.id);
+      start(run);
+      continue; // re-check the same index: the queue shifted
+    }
+    noteWaiting(run.id, verdict.reason);
+    // Resource limits hold the whole queue in order; a busy template only holds its own runs.
+    if (verdict.blocksQueue) {
+      for (const id of queue.slice(i + 1)) noteWaiting(id, verdict.reason);
+      break;
+    }
+    i += 1;
   }
+  // Resources change on their own: look again shortly.
+  if (queue.length) retryTimer = setTimeout(pump, 3000);
+}
+
+function start(run: Run) {
+  const settings = getSettings();
+  const entry: Active = {
+    runId: run.id,
+    abort: new AbortController(),
+    mode: run.mode,
+    templateId: run.template_id,
+    startedAt: Date.now(),
+    costMb: estimateMb(run.mode, settings.workers),
+  };
+  active.set(run.id, entry);
+  if (active.size > 1) log(run.id, `▶ Starting alongside ${active.size - 1} other run(s)`);
+  void execute(run.id, entry.abort)
+    .catch((e) => {
+      const message = e instanceof Error ? e.message : String(e);
+      log(run.id, `✖ ${message}`);
+      setStatus(run.id, entry.abort.signal.aborted ? 'canceled' : 'error', { error: message, finished_at: now() });
+    })
+    .finally(() => {
+      // Secret values only live in the environment, but drop anything a spec may have written.
+      rmSync(join(runDir(run.id), 'scratch'), { recursive: true, force: true });
+      active.delete(run.id);
+      pump();
+    });
 }
 
 // ---- execution --------------------------------------------------------------
@@ -152,8 +264,34 @@ async function execute(runId: number, abort: AbortController) {
     const template = run.template_id ? getTemplate(run.template_id) : undefined;
     const existing = template?.spec || '';
     if (existing && !existsSync(join(dir, 'flow.spec.ts'))) writeFileSync(join(dir, 'flow.spec.ts'), existing);
-    const { costUsd } = await generateSpec({ run, dir, env, variables: mergedVariables(run), existingSpec: existing, abort, log: (l) => log(runId, l) });
-    updateRun(runId, { cost_usd: costUsd });
+    // Persist the tally as it grows (throttled) so a canceled or crashed run still shows its spend.
+    let lastSave = 0;
+    const latest: { value: { tokens: TokenUsage; costUsd: number | null } | null } = { value: null };
+    const saveUsage = (tokens: TokenUsage, costUsd: number | null, force = false) => {
+      latest.value = { tokens, costUsd };
+      events.emit('event', { runId, type: 'usage', tokens, costUsd } satisfies RunEvent);
+      if (force || Date.now() - lastSave > 3000) {
+        lastSave = Date.now();
+        updateRun(runId, { tokens, ...(costUsd != null ? { cost_usd: costUsd } : {}) });
+      }
+    };
+    try {
+      const { costUsd, tokens } = await generateSpec({
+        run,
+        dir,
+        env,
+        variables: mergedVariables(run),
+        existingSpec: existing,
+        abort,
+        log: (l) => log(runId, l),
+        onUsage: (t, c) => saveUsage(t, c),
+      });
+      saveUsage(tokens, costUsd, true);
+    } finally {
+      // Canceled or failed mid-way: keep what was spent so far.
+      const last = latest.value;
+      if (last) updateRun(runId, { tokens: last.tokens, ...(last.costUsd != null ? { cost_usd: last.costUsd } : {}) });
+    }
     if (!existsSync(join(dir, 'flow.spec.ts'))) throw new Error('The agent finished without writing flow.spec.ts');
     log(runId, '— Final verification run of flow.spec.ts —');
   } else {
@@ -185,7 +323,8 @@ async function execute(runId: number, abort: AbortController) {
 function playwright(runId: number, dir: string, env: NodeJS.ProcessEnv, abort: AbortController): Promise<number> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [PW_CLI, 'test', 'flow.spec.ts', '-c', 'playwright.config.ts'], { cwd: dir, env });
-    if (active?.runId === runId) active.child = child;
+    const entry = active.get(runId);
+    if (entry) entry.child = child;
     let buf = '';
     const onData = (chunk: Buffer) => {
       buf += chunk.toString();

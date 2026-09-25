@@ -115,7 +115,7 @@ async function remove() {
           <p v-if="!spec" class="muted small">No spec yet: use Regenerate with AI.</p>
         </div>
         <div class="card">
-          <h2>History</h2>
+          <div class="row" style="margin-bottom: 12px"><h2 style="margin: 0">History</h2><span class="spacer" /><RouterLink :to="`/runs?templateId=${props.id}`" class="small">Filter by date</RouterLink></div>
           <p v-if="!runs.length" class="muted small">No runs yet.</p>
           <ul class="history">
             <li v-for="r in runs" :key="r.id">

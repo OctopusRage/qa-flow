@@ -10,7 +10,8 @@ base URL, and post the step-by-step screenshot report to Slack.
 curl -fsSL https://raw.githubusercontent.com/OctopusRage/qa-flow/main/install.sh | bash
 ```
 
-Needs Node.js 22.13+, pnpm (enabled through corepack if missing) and git. It clones to `~/.qa-flow`,
+Works on Linux and macOS (Intel and Apple Silicon). Needs Node.js 22.13+, pnpm (enabled through
+corepack if missing) and git; on macOS: `brew install node git`. It clones to `~/.qa-flow`,
 installs dependencies and Chromium, builds the dashboard, links `~/.local/bin/qa-flow` and starts it on
 http://127.0.0.1:4777. Run it again to update. Options go after `bash -s --`:
 
@@ -20,7 +21,7 @@ curl -fsSL https://raw.githubusercontent.com/OctopusRage/qa-flow/main/install.sh
 
 | Option | |
 |---|---|
-| `--service` | systemd user service that starts with your session (Linux) |
+| `--service` | login service: systemd user unit on Linux, launchd agent on macOS |
 | `--mcp` | add the MCP server to Claude Code (user scope) |
 | `--no-start` | install only |
 | `--dir <path>` / `--ref <branch>` | install folder (default `~/.qa-flow`) / git ref (default `main`) |
@@ -78,6 +79,31 @@ them as a flow; a test without any step screenshot is flagged in the log.
 Settings (shared, can be secret) < template (non-secret defaults) < run overrides. Specs read them
 with `v('KEY')`. The AI is told only the key names of secret variables, and its Bash access is
 limited to `./pw test …`, `ls`, `mkdir` and removing `scratch/`, so it cannot dump the environment.
+
+## Run history and AI usage
+
+**Runs** lists every run with filters kept in the URL: date presets (today, yesterday, last 7 / 30
+days) or a custom range in your local time, status chips with counts, template, source (dashboard or
+MCP) and text/#id search. The totals above the table (runs, pass rate, AI tokens, AI cost) follow the
+filter.
+
+AI runs record token usage (input, output, cache read, cache write, per model, with cost). It updates
+live while the agent works and is kept for canceled runs. It shows on the run page, the runs table,
+the dashboard (last 30 days / today), the Slack draft, and MCP `get_run` / `list_runs`
+(`list_runs` takes `from` / `to` dates too). Replays use no AI tokens.
+
+## Concurrent runs
+
+Settings › Concurrent runs:
+
+- **Auto (default)**: starts another queued run only while CPU is under the limit (75%) and available
+  memory covers the new run's estimate (replay ≈ 300 MB + 450 MB per worker, AI ≈ 900 MB + 450 MB per
+  worker) plus a headroom (1.5 GB), counting memory that just-started runs will still claim. Capped
+  by *maximum runs at once* (4).
+- **Fixed**: always up to N at once (1 = strictly sequential).
+
+The first queued run always starts; runs of the same template never overlap (shared test accounts).
+The dashboard's Runner card shows CPU, memory, busy slots and why each queued run is waiting.
 
 ## Settings
 

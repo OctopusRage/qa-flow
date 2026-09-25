@@ -45,7 +45,13 @@ export function registerMcp(app: FastifyInstance, port: number) {
     const r = d.run;
     const lines = [`Run #${r.id} "${r.name}" — ${r.status} (${r.mode}) on ${r.base_url}`, `Open: ${runLink(r.id)}`];
     if (r.summary) lines.push(`Result: ${r.summary.passed}/${r.summary.total} passed, ${r.summary.failed} failed, ${r.summary.skipped} skipped, ${(r.summary.durationMs / 1000).toFixed(1)}s`);
-    if (r.cost_usd != null) lines.push(`AI cost: ~$${r.cost_usd.toFixed(2)}`);
+    if (r.status === 'queued') lines.push(`Waiting: ${d.queue?.waiting?.[r.id] ?? 'next in line'}`);
+    if (r.tokens) {
+      const t = r.tokens;
+      const n = (x: number) => x.toLocaleString('en-US');
+      lines.push(`AI tokens: ${n(t.total)} (input ${n(t.input)}, output ${n(t.output)}, cache read ${n(t.cacheRead)}, cache write ${n(t.cacheWrite)})${r.cost_usd != null ? ` · ~$${r.cost_usd.toFixed(2)}` : ''}`);
+      for (const [model, m] of Object.entries(t.models ?? {}) as [string, Json][]) lines.push(`  ${model}: ${n(m.input + m.output + m.cacheRead + m.cacheWrite)} tokens, ~$${(m.costUsd ?? 0).toFixed(2)}`);
+    } else if (r.cost_usd != null) lines.push(`AI cost: ~$${r.cost_usd.toFixed(2)}`);
     if (r.error) lines.push(`Error: ${r.error}`);
     if (d.template) lines.push(`Template: #${d.template.id} ${d.template.name}`);
     for (const t of d.result?.tests ?? []) {
@@ -155,12 +161,33 @@ export function registerMcp(app: FastifyInstance, port: number) {
 
     server.registerTool(
       'list_runs',
-      { title: 'List runs', description: 'Recent runs, newest first.', inputSchema: { templateId: z.number().int().optional(), limit: z.number().int().min(1).max(100).optional() }, annotations: { readOnlyHint: true } },
-      safe(async ({ templateId, limit }: { templateId?: number; limit?: number }) => {
-        const q = new URLSearchParams({ limit: String(limit ?? 20), ...(templateId ? { templateId: String(templateId) } : {}) });
-        const runs = (await call('GET', `/api/runs?${q}`)) as unknown as Json[];
-        if (!runs.length) return text('No runs.');
-        return text(runs.map((r) => `#${r.id} [${r.status}] ${r.name} — ${r.base_url}${r.summary ? ` — ${r.summary.passed}/${r.summary.total}` : ''} — ${r.created_at}`).join('\n'));
+      {
+        title: 'List runs',
+        description: 'Run history, newest first, filtered by date range, status, template or text; includes AI token/cost totals for the filter.',
+        inputSchema: {
+          from: z.string().optional().describe('Start date/time, inclusive: YYYY-MM-DD (UTC) or ISO timestamp'),
+          to: z.string().optional().describe('End date/time, exclusive: YYYY-MM-DD (UTC) or ISO timestamp'),
+          status: z.array(z.enum(['queued', 'generating', 'running', 'passed', 'failed', 'error', 'canceled'])).optional(),
+          templateId: z.number().int().optional(),
+          query: z.string().optional().describe('Matches run name, base URL, or run id'),
+          limit: z.number().int().min(1).max(200).optional(),
+        },
+        annotations: { readOnlyHint: true },
+      },
+      safe(async (a: { from?: string; to?: string; status?: string[]; templateId?: number; query?: string; limit?: number }) => {
+        const q = new URLSearchParams({ limit: String(a.limit ?? 30) });
+        if (a.from) q.set('from', a.from);
+        if (a.to) q.set('to', a.to);
+        if (a.status?.length) q.set('status', a.status.join(','));
+        if (a.templateId) q.set('templateId', String(a.templateId));
+        if (a.query) q.set('q', a.query);
+        const r = await call('GET', `/api/runs/search?${q}`);
+        const n = (x: number) => x.toLocaleString('en-US');
+        const head = `${r.total} run(s)${r.items.length < r.total ? `, showing ${r.items.length}` : ''} · ${Object.entries(r.counts).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'} · AI tokens: ${n(r.usage.tokens)} (${r.usage.aiRuns} run(s) with token data) · AI cost: ~$${r.usage.costUsd.toFixed(2)}`;
+        const rows = (r.items as Json[]).map(
+          (x) => `#${x.id} [${x.status}] ${x.name} — ${x.base_url}${x.summary ? ` — ${x.summary.passed}/${x.summary.total}` : ''}${x.tokens ? ` — ${n(x.tokens.total)} tok` : ''} — ${x.created_at}`,
+        );
+        return text([head, ...rows].join('\n'), r);
       }),
     );
 

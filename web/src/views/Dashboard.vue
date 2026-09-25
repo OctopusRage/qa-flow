@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { api, fmtDuration, fmtTime, isLive, type Run, type Template } from '../api';
+import { api, fmtDuration, fmtTime, fmtTokens, fmtUsd, isLive, type QueueState, type Run, type SchedulerState, type Template, type UsageTotals } from '../api';
 import StatusBadge from '../components/StatusBadge.vue';
 import McpConnect from '../components/McpConnect.vue';
+import RunnerPanel from '../components/RunnerPanel.vue';
 
-type Dash = { templates: number; runs24h: number; passRate: number | null; costUsd: number; recent: Run[]; queue: { active: number | null; queued: number[] } };
+type Dash = { templates: number; runs24h: number; passRate: number | null; costUsd: number; recent: Run[]; queue: QueueState; scheduler: SchedulerState; usage: { today: UsageTotals; last30d: UsageTotals; allTime: UsageTotals } };
 
 const router = useRouter();
 const dash = ref<Dash | null>(null);
@@ -49,8 +50,14 @@ onBeforeUnmount(() => clearInterval(timer));
       <div class="card stat"><div class="label">Templates</div><div class="value">{{ dash.templates }}</div></div>
       <div class="card stat"><div class="label">Runs, last 24h</div><div class="value">{{ dash.runs24h }}</div></div>
       <div class="card stat"><div class="label">Pass rate</div><div class="value">{{ dash.passRate === null ? '—' : `${dash.passRate}%` }}</div></div>
-      <div class="card stat"><div class="label">AI cost (recent)</div><div class="value">${{ dash.costUsd.toFixed(2) }}</div></div>
+      <RouterLink to="/runs?range=30d" class="card stat usage" :title="`Today: ${fmtTokens(dash.usage.today.tokens)} tokens, ${fmtUsd(dash.usage.today.costUsd)} · All time: ${fmtTokens(dash.usage.allTime.tokens)} tokens, ${fmtUsd(dash.usage.allTime.costUsd)}`">
+        <div class="label">AI tokens, 30 days</div>
+        <div class="value">{{ fmtTokens(dash.usage.last30d.tokens) }}</div>
+        <div class="faint small">{{ fmtUsd(dash.usage.last30d.costUsd) }} · today {{ fmtTokens(dash.usage.today.tokens) }}</div>
+      </RouterLink>
     </div>
+
+    <RunnerPanel v-if="dash" :state="dash.scheduler" />
 
     <McpConnect />
 
@@ -60,6 +67,7 @@ onBeforeUnmount(() => clearInterval(timer));
           <h2 style="margin: 0">Recent runs</h2>
           <span class="spacer" />
           <span v-if="dash?.queue.queued.length" class="muted small">{{ dash.queue.queued.length }} queued</span>
+          <RouterLink to="/runs" class="small">All runs</RouterLink>
         </div>
         <div v-if="!dash?.recent.length" class="empty">
           No runs yet. <RouterLink to="/runs/new">Start one</RouterLink>: describe what to test and let the AI write the flow.
@@ -76,7 +84,10 @@ onBeforeUnmount(() => clearInterval(timer));
                     {{ r.mode === 'generate' ? 'AI generate' : 'Replay' }} · {{ r.base_url }}
                   </div>
                 </td>
-                <td><StatusBadge :status="r.status" /></td>
+                <td>
+                  <StatusBadge :status="r.status" :title="dash.queue.waiting[r.id]" />
+                  <div v-if="r.status === 'queued' && dash.queue.waiting[r.id]" class="faint small wait">{{ dash.queue.waiting[r.id] }}</div>
+                </td>
                 <td class="small">
                   <template v-if="r.summary">{{ r.summary.passed }}/{{ r.summary.total }} · {{ fmtDuration(r.summary.durationMs) }}</template>
                   <span v-else class="faint">—</span>
@@ -113,6 +124,9 @@ onBeforeUnmount(() => clearInterval(timer));
 </template>
 
 <style scoped>
+.usage { color: inherit; }
+.usage:hover { text-decoration: none; border-color: var(--accent); }
+.wait { max-width: 180px; margin-top: 2px; line-height: 1.3; }
 .src { display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; padding: 0 6px; border-radius: 4px; background: var(--accent-soft); color: var(--accent); margin-right: 4px; }
 .tpl-list { list-style: none; margin: 0; padding: 0; }
 .tpl-list li { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }

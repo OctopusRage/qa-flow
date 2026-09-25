@@ -1,7 +1,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { getSettings, type Run, type Variable } from './db.ts';
+import { getSettings, type Run, type TokenUsage, type Variable } from './db.ts';
 
 const SYSTEM = `You are a senior QA automation engineer. You turn a plain-language test scope into a
 reliable Playwright end-to-end test and prove it by running it against the live app.
@@ -66,6 +66,15 @@ function buildPrompt(run: Run, variables: Variable[], existingSpec: string): str
   return parts.join('\n\n');
 }
 
+/** Running tally from streamed assistant messages; replaced by the result's exact modelUsage. */
+function emptyUsage(): TokenUsage {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, models: {} };
+}
+function withTotal(u: TokenUsage): TokenUsage {
+  u.total = u.input + u.output + u.cacheRead + u.cacheWrite;
+  return u;
+}
+
 const clip = (s: string, n = 400) => (s.length > n ? `${s.slice(0, n)}…` : s);
 
 export async function generateSpec(opts: {
@@ -76,7 +85,9 @@ export async function generateSpec(opts: {
   existingSpec: string;
   abort: AbortController;
   log: (line: string) => void;
-}): Promise<{ costUsd: number | null }> {
+  /** Called whenever the token tally changes (live progress). */
+  onUsage?: (usage: TokenUsage, costUsd: number | null) => void;
+}): Promise<{ costUsd: number | null; tokens: TokenUsage }> {
   const settings = getSettings();
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(opts.env)) if (v !== undefined) env[k] = v;
@@ -85,6 +96,9 @@ export async function generateSpec(opts: {
   opts.log(`🤖 Generating the spec with Claude${settings.model ? ` (${settings.model})` : ''}, max ${settings.maxTurns} turns`);
   let costUsd: number | null = null;
   let summary = '';
+  const usage = emptyUsage();
+  // A streamed message arrives in several frames that share one id and repeat its usage.
+  const counted = new Map<string, { input: number; output: number; cacheRead: number; cacheWrite: number }>();
 
   const stream = query({
     prompt: buildPrompt(opts.run, opts.variables, opts.existingSpec),
@@ -120,6 +134,21 @@ export async function generateSpec(opts: {
 
   for await (const msg of stream) {
     if (msg.type === 'assistant') {
+      const u = msg.message.usage;
+      if (u && msg.message.id) {
+        const next = { input: u.input_tokens ?? 0, output: u.output_tokens ?? 0, cacheRead: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0 };
+        const prev = counted.get(msg.message.id) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+        // Frames of one message report cumulative counts: add only the growth.
+        const model = msg.message.model || 'unknown';
+        const m = (usage.models[model] ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 });
+        for (const k of ['input', 'output', 'cacheRead', 'cacheWrite'] as const) {
+          const delta = Math.max(0, next[k] - prev[k]);
+          usage[k] += delta;
+          m[k] += delta;
+        }
+        counted.set(msg.message.id, { input: Math.max(prev.input, next.input), output: Math.max(prev.output, next.output), cacheRead: Math.max(prev.cacheRead, next.cacheRead), cacheWrite: Math.max(prev.cacheWrite, next.cacheWrite) });
+        opts.onUsage?.(withTotal(usage), costUsd);
+      }
       for (const block of msg.message.content) {
         if (block.type === 'text' && block.text.trim()) {
           opts.log(`🤖 ${block.text.trim()}`);
@@ -141,11 +170,25 @@ export async function generateSpec(opts: {
       }
     } else if (msg.type === 'result') {
       costUsd = msg.total_cost_usd ?? null;
-      opts.log(`🤖 Agent finished: ${msg.subtype}, ${msg.num_turns} turns${costUsd != null ? `, ~$${costUsd.toFixed(2)}` : ''}`);
+      // modelUsage covers every model call (subagents, compaction): it is the exact figure.
+      if (msg.modelUsage && Object.keys(msg.modelUsage).length) {
+        const exact = emptyUsage();
+        for (const [model, mu] of Object.entries(msg.modelUsage)) {
+          const m = { input: mu.inputTokens ?? 0, output: mu.outputTokens ?? 0, cacheRead: mu.cacheReadInputTokens ?? 0, cacheWrite: mu.cacheCreationInputTokens ?? 0, costUsd: mu.costUSD ?? 0 };
+          exact.models[model] = m;
+          exact.input += m.input;
+          exact.output += m.output;
+          exact.cacheRead += m.cacheRead;
+          exact.cacheWrite += m.cacheWrite;
+        }
+        Object.assign(usage, withTotal(exact));
+      }
+      opts.onUsage?.(withTotal(usage), costUsd);
+      opts.log(`🤖 Agent finished: ${msg.subtype}, ${msg.num_turns} turns, ${usage.total.toLocaleString('en-US')} tokens (in ${usage.input.toLocaleString('en-US')}, out ${usage.output.toLocaleString('en-US')}, cache read ${usage.cacheRead.toLocaleString('en-US')}, cache write ${usage.cacheWrite.toLocaleString('en-US')})${costUsd != null ? `, ~$${costUsd.toFixed(2)}` : ''}`);
       if (msg.subtype === 'success' && msg.result) summary = msg.result;
       if (msg.subtype !== 'success') opts.log(`⚠ Agent stopped early (${msg.subtype}); verifying whatever flow.spec.ts it left.`);
     }
   }
   if (summary) writeFileSync(join(opts.dir, 'agent-summary.md'), summary);
-  return { costUsd };
+  return { costUsd, tokens: withTotal(usage) };
 }

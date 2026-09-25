@@ -25,6 +25,10 @@ async function save(extra: Record<string, unknown> = {}) {
         headless: s.value.headless,
         workers: Number(s.value.workers),
         testTimeoutSec: Number(s.value.testTimeoutSec),
+        concurrencyMode: s.value.concurrencyMode,
+        maxConcurrent: Number(s.value.maxConcurrent),
+        memoryHeadroomMb: Number(s.value.memoryHeadroomMb),
+        cpuLimitPercent: Number(s.value.cpuLimitPercent),
         variables: s.value.variables,
         baseUrls: s.value.baseUrls,
         slackToken: slackToken.value || undefined,
@@ -116,6 +120,38 @@ const removeUrl = (u: string) => s.value && (s.value.baseUrls = s.value.baseUrls
         </label>
       </section>
 
+      <section id="concurrency" class="card">
+        <h2>Concurrent runs</h2>
+        <div class="modes" role="radiogroup" aria-label="Concurrency mode">
+          <label class="mode" :class="{ on: s.concurrencyMode === 'auto' }">
+            <input v-model="s.concurrencyMode" type="radio" value="auto" />
+            <span><strong>Auto (resource aware)</strong><small>Starts another run only while CPU and memory allow it; otherwise runs wait in the queue.</small></span>
+          </label>
+          <label class="mode" :class="{ on: s.concurrencyMode === 'fixed' }">
+            <input v-model="s.concurrencyMode" type="radio" value="fixed" />
+            <span><strong>Fixed</strong><small>Always runs up to the limit below, whatever the machine load. Set it to 1 for strictly one at a time.</small></span>
+          </label>
+        </div>
+        <div class="grid cols-2" style="margin-top: 14px">
+          <label class="field">
+            <span>{{ s.concurrencyMode === 'auto' ? 'Maximum runs at once' : 'Runs at once' }}</span>
+            <input v-model="s.maxConcurrent" type="number" min="1" max="32" />
+          </label>
+          <template v-if="s.concurrencyMode === 'auto'">
+            <label class="field">
+              <span>Start new runs while CPU is below (%)</span>
+              <input v-model="s.cpuLimitPercent" type="number" min="10" max="100" />
+            </label>
+            <label class="field">
+              <span>Keep free memory for other apps (MB)</span>
+              <input v-model="s.memoryHeadroomMb" type="number" min="0" step="256" />
+              <small>Estimates used: a replay about 300 MB + 450 MB per worker, an AI generation about 900 MB + 450 MB per worker.</small>
+            </label>
+          </template>
+        </div>
+        <p class="muted small" style="margin: 0">The first queued run always starts. Runs of the same template never overlap, since they share test accounts.</p>
+      </section>
+
       <section class="card">
         <h2>Playwright</h2>
         <div class="grid cols-2">
@@ -139,6 +175,12 @@ const removeUrl = (u: string) => s.value && (s.value.baseUrls = s.value.baseUrls
 </template>
 
 <style scoped>
+.modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.mode { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; cursor: pointer; }
+.mode.on { border-color: var(--accent); background: var(--accent-soft); }
+.mode input { margin-top: 3px; }
+.mode small { display: block; color: var(--muted); margin-top: 2px; }
+@media (max-width: 640px) { .modes { grid-template-columns: minmax(0, 1fr); } }
 .narrow { max-width: 820px; }
 .urls { list-style: none; padding: 0; margin: 8px 0 0; }
 .urls li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 0; word-break: break-all; }

@@ -7,6 +7,7 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/', component: () => import('./views/Dashboard.vue') },
+    { path: '/runs', component: () => import('./views/Runs.vue') },
     { path: '/runs/new', component: () => import('./views/NewRun.vue') },
     { path: '/runs/:id', component: () => import('./views/RunDetail.vue'), props: true },
     { path: '/templates', component: () => import('./views/Templates.vue') },

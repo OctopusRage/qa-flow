@@ -49,6 +49,11 @@ db.exec(`
 // Columns added after the first release.
 const runCols = (db.prepare('PRAGMA table_info(runs)').all() as { name: string }[]).map((c) => c.name);
 if (!runCols.includes('source')) db.exec("ALTER TABLE runs ADD COLUMN source TEXT NOT NULL DEFAULT 'ui'");
+if (!runCols.includes('tokens')) db.exec('ALTER TABLE runs ADD COLUMN tokens TEXT');
+
+export type TokenCounts = { input: number; output: number; cacheRead: number; cacheWrite: number };
+/** AI token usage of a run: totals plus a per-model split (models: model id → counts + cost). */
+export type TokenUsage = TokenCounts & { total: number; models: Record<string, TokenCounts & { costUsd: number }> };
 
 export type Variable = { key: string; value: string; secret?: boolean };
 
@@ -82,6 +87,7 @@ export type Run = {
   error: string | null;
   slack: { channel: string; ts: string; permalink?: string; at: string }[];
   source: 'ui' | 'mcp';
+  tokens: TokenUsage | null;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -100,6 +106,7 @@ function toRun(r: Row): Run {
     ...(r as Run),
     variables: JSON.parse(String(r.variables)),
     summary: r.summary ? JSON.parse(String(r.summary)) : null,
+    tokens: r.tokens ? JSON.parse(String(r.tokens)) : null,
     slack: JSON.parse(String(r.slack)),
   };
 }
@@ -115,6 +122,13 @@ export type Settings = {
   headless: boolean;
   workers: number;
   testTimeoutSec: number;
+  /** auto: start more runs while CPU/memory allow (up to maxConcurrent); fixed: always maxConcurrent. */
+  concurrencyMode: 'auto' | 'fixed';
+  maxConcurrent: number;
+  /** auto mode keeps at least this much memory free for the rest of the machine. */
+  memoryHeadroomMb: number;
+  /** auto mode starts no extra run while CPU usage is above this. */
+  cpuLimitPercent: number;
   variables: Variable[];
   baseUrls: string[];
 };
@@ -128,6 +142,10 @@ const DEFAULTS: Settings = {
   headless: true,
   workers: 1,
   testTimeoutSec: 300,
+  concurrencyMode: 'auto',
+  maxConcurrent: 4,
+  memoryHeadroomMb: 1536,
+  cpuLimitPercent: 75,
   variables: [],
   baseUrls: [],
 };
@@ -192,6 +210,80 @@ export function listRuns(limit = 100, templateId?: number): Run[] {
     ? db.prepare('SELECT * FROM runs WHERE template_id = ? ORDER BY id DESC LIMIT ?').all(templateId, limit)
     : db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT ?').all(limit);
   return (rows as Row[]).map(toRun);
+}
+
+export type RunQuery = {
+  /** ISO timestamps; created_at >= from and < to. */
+  from?: string;
+  to?: string;
+  status?: string[];
+  templateId?: number;
+  source?: 'ui' | 'mcp';
+  q?: string;
+  limit?: number;
+  offset?: number;
+};
+
+/** Filtered, paginated run history plus per-status counts for the whole filter. */
+export type UsageTotals = { tokens: number; input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number; aiRuns: number };
+
+export function searchRuns(f: RunQuery): { items: Run[]; total: number; counts: Record<string, number>; usage: UsageTotals } {
+  const where: string[] = [];
+  const args: (string | number)[] = [];
+  if (f.from) {
+    where.push('created_at >= ?');
+    args.push(f.from);
+  }
+  if (f.to) {
+    where.push('created_at < ?');
+    args.push(f.to);
+  }
+  if (f.templateId) {
+    where.push('template_id = ?');
+    args.push(f.templateId);
+  }
+  if (f.source) {
+    where.push('source = ?');
+    args.push(f.source);
+  }
+  if (f.q?.trim()) {
+    where.push("(name LIKE ? ESCAPE '\\' OR base_url LIKE ? ESCAPE '\\' OR CAST(id AS TEXT) = ?)");
+    const like = `%${f.q.trim().replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    args.push(like, like, f.q.trim().replace(/^#/, ''));
+  }
+  const base = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const counts = Object.fromEntries(
+    (db.prepare(`SELECT status, COUNT(*) AS n FROM runs ${base} GROUP BY status`).all(...args) as { status: string; n: number }[]).map((r) => [r.status, r.n]),
+  );
+  // Status narrows the list but the counts above stay per status, for the filter chips.
+  const statusFilter = f.status?.length ? `${base ? `${base} AND` : 'WHERE'} status IN (${f.status.map(() => '?').join(',')})` : base;
+  const statusArgs = [...args, ...(f.status ?? [])];
+  const total = (db.prepare(`SELECT COUNT(*) AS n FROM runs ${statusFilter}`).get(...statusArgs) as { n: number }).n;
+  const items = (
+    db.prepare(`SELECT * FROM runs ${statusFilter} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...statusArgs, Math.min(f.limit ?? 50, 500), f.offset ?? 0) as Row[]
+  ).map(toRun);
+  return { items, total, counts, usage: usageTotals(statusFilter, statusArgs) };
+}
+
+function usageTotals(where: string, args: (string | number)[]): UsageTotals {
+  const r = db
+    .prepare(
+      `SELECT COALESCE(SUM(json_extract(tokens, '$.total')), 0) AS tokens,
+              COALESCE(SUM(json_extract(tokens, '$.input')), 0) AS input,
+              COALESCE(SUM(json_extract(tokens, '$.output')), 0) AS output,
+              COALESCE(SUM(json_extract(tokens, '$.cacheRead')), 0) AS cacheRead,
+              COALESCE(SUM(json_extract(tokens, '$.cacheWrite')), 0) AS cacheWrite,
+              COALESCE(SUM(cost_usd), 0) AS costUsd,
+              COUNT(tokens) AS aiRuns
+       FROM runs ${where}`,
+    )
+    .get(...args) as UsageTotals;
+  return { ...r };
+}
+
+/** AI usage since a timestamp (all runs when omitted). */
+export function usageSince(from?: string): UsageTotals {
+  return from ? usageTotals('WHERE created_at >= ?', [from]) : usageTotals('', []);
 }
 
 export function getRun(id: number): Run | undefined {

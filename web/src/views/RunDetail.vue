@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { api, errorText, fileUrl, fmtDuration, fmtTime, isLive, toast, type Run, type RunDetail, type Template } from '../api';
+import { api, errorText, fileUrl, fmtDuration, fmtTime, fmtTokens, fmtUsd, isLive, toast, type Run, type RunDetail, type Template, type TokenUsage } from '../api';
 import StatusBadge from '../components/StatusBadge.vue';
 import SlackDialog from '../components/SlackDialog.vue';
 import Lightbox, { type Shot } from '../components/Lightbox.vue';
@@ -55,10 +55,16 @@ function scrollLog() {
 function connect() {
   source = new EventSource(`/api/runs/${runId}/events`);
   source.onmessage = (m) => {
-    const e = JSON.parse(m.data) as { type: 'log'; line: string } | { type: 'status'; status: string };
-    if (e.type === 'log') {
+    const e = JSON.parse(m.data) as { type: 'log'; line: string } | { type: 'status'; status: string } | { type: 'usage'; tokens: TokenUsage; costUsd: number | null };
+    if (e.type === 'usage') {
+      if (detail.value) {
+        detail.value.run.tokens = e.tokens;
+        if (e.costUsd != null) detail.value.run.cost_usd = e.costUsd;
+      }
+    } else if (e.type === 'log') {
       logText.value += `${e.line}\n`;
       scrollLog();
+      if (e.line.startsWith('⏳')) void load();
     } else {
       void load().then(() => {
         if (!live.value) tab.value = 'flow';
@@ -125,7 +131,10 @@ const canSave = computed(() => !!detail.value?.spec && run.value?.mode === 'gene
           <span class="mono">{{ run.base_url }}</span>
           <span>{{ fmtTime(run.created_at) }}</span>
           <span v-if="run.summary">{{ fmtDuration(run.summary.durationMs) }}</span>
-          <span v-if="run.cost_usd != null">AI ~${{ run.cost_usd.toFixed(2) }}</span>
+          <span v-if="run.tokens" :title="`input ${run.tokens.input.toLocaleString()} · output ${run.tokens.output.toLocaleString()} · cache read ${run.tokens.cacheRead.toLocaleString()} · cache write ${run.tokens.cacheWrite.toLocaleString()}`">
+            AI {{ fmtTokens(run.tokens.total) }} tokens<template v-if="run.cost_usd != null"> · ~{{ fmtUsd(run.cost_usd) }}</template>
+          </span>
+          <span v-else-if="run.cost_usd != null">AI ~{{ fmtUsd(run.cost_usd) }}</span>
           <RouterLink v-if="detail?.template" :to="`/templates/${detail.template.id}`">Template: {{ detail.template.name }}</RouterLink>
         </p>
       </div>
@@ -147,6 +156,7 @@ const canSave = computed(() => !!detail.value?.spec && run.value?.mode === 'gene
       <div class="card stat"><div class="label">Failed</div><div class="value" :class="{ fail: run.summary.failed }">{{ run.summary.failed }}</div></div>
       <div class="card stat"><div class="label">Steps captured</div><div class="value">{{ shots.length }}</div></div>
     </div>
+    <p v-if="run.status === 'queued'" class="notice" style="margin-top: 12px">⏳ {{ detail?.queue.waiting[run.id] ?? 'Waiting for a free run slot' }}</p>
     <p v-if="run.error" class="error-box" style="margin-top: 12px">{{ run.error }}</p>
     <p v-if="detail?.result?.error" class="error-box" style="margin-top: 12px">{{ detail.result.error }}</p>
     <p v-if="run.slack.length" class="notice small" style="margin-top: 12px">
@@ -155,6 +165,35 @@ const canSave = computed(() => !!detail.value?.spec && run.value?.mode === 'gene
         · <a v-if="s.permalink" :href="s.permalink" target="_blank" rel="noopener">{{ fmtTime(s.at) }}</a><span v-else>{{ fmtTime(s.at) }}</span>
       </template>
     </p>
+
+    <section v-if="run.tokens" class="card usage">
+      <div class="row" style="margin-bottom: 10px">
+        <h2 style="margin: 0">AI usage</h2>
+        <span v-if="live" class="badge generating">counting</span>
+        <span class="spacer" />
+        <strong>{{ run.tokens.total.toLocaleString() }} tokens</strong>
+        <span v-if="run.cost_usd != null" class="muted">· ~{{ fmtUsd(run.cost_usd) }}</span>
+      </div>
+      <div class="usage-grid">
+        <div><span class="muted small">Input</span><strong>{{ run.tokens.input.toLocaleString() }}</strong></div>
+        <div><span class="muted small">Output</span><strong>{{ run.tokens.output.toLocaleString() }}</strong></div>
+        <div><span class="muted small">Cache read</span><strong>{{ run.tokens.cacheRead.toLocaleString() }}</strong></div>
+        <div><span class="muted small">Cache write</span><strong>{{ run.tokens.cacheWrite.toLocaleString() }}</strong></div>
+      </div>
+      <table v-if="Object.keys(run.tokens.models).length > 1 || !live" class="list models">
+        <thead><tr><th>Model</th><th>Input</th><th>Output</th><th>Cache read</th><th>Cache write</th><th>Cost</th></tr></thead>
+        <tbody>
+          <tr v-for="(m, name) in run.tokens.models" :key="name">
+            <td class="mono small">{{ name }}</td>
+            <td>{{ fmtTokens(m.input) }}</td>
+            <td>{{ fmtTokens(m.output) }}</td>
+            <td>{{ fmtTokens(m.cacheRead) }}</td>
+            <td>{{ fmtTokens(m.cacheWrite) }}</td>
+            <td>{{ m.costUsd ? fmtUsd(m.costUsd) : '—' }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
 
     <div class="tabs" style="margin-top: 20px" role="tablist">
       <button :class="{ active: tab === 'flow' }" @click="tab = 'flow'">Flow</button>
@@ -229,6 +268,12 @@ const canSave = computed(() => !!detail.value?.spec && run.value?.mode === 'gene
 </template>
 
 <style scoped>
+.usage { margin-top: 16px; }
+.usage-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.usage-grid div { display: flex; flex-direction: column; }
+.models { margin-top: 12px; }
+.table-scroll { overflow-x: auto; }
+@media (max-width: 640px) { .usage-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .models { display: block; overflow-x: auto; } }
 .crumbs { color: var(--muted); margin-bottom: 6px; }
 .meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 6px 0 0; color: var(--muted); font-size: 13px; }
 .meta .mono { word-break: break-all; }

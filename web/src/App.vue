@@ -3,6 +3,7 @@ import { toastText } from './api';
 
 const nav = [
   { to: '/', label: 'Dashboard', exact: true },
+  { to: '/runs', label: 'Runs', exact: true },
   { to: '/runs/new', label: 'New run' },
   { to: '/templates', label: 'Templates' },
   { to: '/settings', label: 'Settings' },

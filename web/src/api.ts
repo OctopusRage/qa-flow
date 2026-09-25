@@ -17,10 +17,16 @@ export type Run = {
   error: string | null;
   slack: { channel: string; ts: string; permalink?: string; at: string }[];
   source: 'ui' | 'mcp';
+  tokens: TokenUsage | null;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
 };
+export type TokenCounts = { input: number; output: number; cacheRead: number; cacheWrite: number };
+export type TokenUsage = TokenCounts & { total: number; models: Record<string, TokenCounts & { costUsd: number }> };
+export type UsageTotals = { tokens: number; input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number; aiRuns: number };
+export type RunSearch = { items: Run[]; total: number; counts: Record<string, number>; usage: UsageTotals };
+
 export type Template = {
   id: number;
   name: string;
@@ -44,7 +50,17 @@ export type RunDetail = {
   agentSummary: string | null;
   hasReport: boolean;
   template: Template | null;
-  queue: { active: number | null; queued: number[] };
+  queue: QueueState;
+};
+export type QueueState = { running: number[]; queued: number[]; waiting: Record<string, string> };
+export type SchedulerState = {
+  mode: 'auto' | 'fixed';
+  maxConcurrent: number;
+  memoryHeadroomMb: number;
+  cpuLimitPercent: number;
+  resources: { cpuPercent: number; cores: number; load1: number; memAvailable: number; memTotal: number };
+  running: { runId: number; mode: string; startedAt: string; estimateMb: number }[];
+  queued: { runId: number; reason: string }[];
 };
 export type Settings = {
   slackToken: string;
@@ -57,6 +73,10 @@ export type Settings = {
   headless: boolean;
   workers: number;
   testTimeoutSec: number;
+  concurrencyMode: 'auto' | 'fixed';
+  maxConcurrent: number;
+  memoryHeadroomMb: number;
+  cpuLimitPercent: number;
   variables: Variable[];
   baseUrls: string[];
 };
@@ -90,6 +110,16 @@ export function fmtDuration(ms?: number | null) {
   if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
   return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
 }
+
+/** 1234 → "1.2K", 3_400_000 → "3.4M". */
+export function fmtTokens(n?: number | null) {
+  if (n == null) return '—';
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)}K`;
+  return `${(n / 1_000_000).toFixed(n < 10_000_000 ? 2 : 1)}M`;
+}
+
+export const fmtUsd = (n?: number | null) => (n == null ? '—' : n > 0 && n < 0.01 ? '<$0.01' : `$${n.toFixed(2)}`);
 
 export function fmtTime(iso?: string | null) {
   if (!iso) return '—';

@@ -12,6 +12,8 @@ import {
   getSettings,
   getTemplate,
   listRuns,
+  searchRuns,
+  usageSince,
   listTemplates,
   rememberBaseUrl,
   saveSettings,
@@ -22,7 +24,7 @@ import {
   type Settings,
   type Variable,
 } from './db.ts';
-import { cancel, enqueue, events, queueState, readResult, runDir, type RunEvent, type RunResult } from './runner.ts';
+import { cancel, enqueue, events, isActive, queueState, readResult, runDir, schedulerState, type RunEvent, type RunResult } from './runner.ts';
 import { authTest, postReport, resolveTarget } from './slack.ts';
 import { registerMcp } from './mcp.ts';
 import { mcpInstall, mcpStatus, mcpUninstall } from './mcp-install.ts';
@@ -79,7 +81,7 @@ app.put('/api/settings', async (req) => {
   const body = req.body as Partial<Settings> & { clearSlackToken?: boolean; clearAnthropicApiKey?: boolean };
   const current = getSettings();
   const patch: Partial<Settings> = {};
-  for (const k of ['slackChannel', 'model', 'maxTurns', 'headless', 'workers', 'testTimeoutSec', 'baseUrls'] as const) {
+  for (const k of ['slackChannel', 'model', 'maxTurns', 'headless', 'workers', 'testTimeoutSec', 'baseUrls', 'concurrencyMode', 'maxConcurrent', 'memoryHeadroomMb', 'cpuLimitPercent'] as const) {
     if (body[k] !== undefined) (patch as Record<string, unknown>)[k] = body[k];
   }
   if (body.slackToken) patch.slackToken = body.slackToken.trim();
@@ -152,6 +154,28 @@ app.delete('/api/templates/:id', async (req) => {
 app.get('/api/runs', async (req) => {
   const q = req.query as { templateId?: string; limit?: string };
   return listRuns(Number(q.limit ?? 100), q.templateId ? Number(q.templateId) : undefined);
+});
+
+/** Accepts an ISO timestamp or YYYY-MM-DD (UTC day start). */
+function isoParam(v: string | undefined, name: string): string | undefined {
+  if (!v) return undefined;
+  const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(v) ? `${v}T00:00:00Z` : v);
+  if (Number.isNaN(d.getTime())) throw new HttpError(400, `Bad ${name} date: ${v}`);
+  return d.toISOString();
+}
+
+app.get('/api/runs/search', async (req) => {
+  const q = req.query as Record<string, string | undefined>;
+  return searchRuns({
+    from: isoParam(q.from, 'from'),
+    to: isoParam(q.to, 'to'),
+    status: q.status ? q.status.split(',').filter(Boolean) : undefined,
+    templateId: q.templateId ? Number(q.templateId) : undefined,
+    source: q.source === 'mcp' || q.source === 'ui' ? q.source : undefined,
+    q: q.q,
+    limit: q.limit ? Number(q.limit) : undefined,
+    offset: q.offset ? Number(q.offset) : undefined,
+  });
 });
 
 app.post('/api/runs', async (req) => {
@@ -243,7 +267,7 @@ app.post('/api/runs/:id/rerun', async (req) => {
 
 app.delete('/api/runs/:id', async (req) => {
   const id = idParam(req.params);
-  if (queueState().active === id) throw new HttpError(409, 'Cancel the run first');
+  if (isActive(id)) throw new HttpError(409, 'Cancel the run first');
   cancel(id);
   deleteRun(id);
   rmSync(runDir(id), { recursive: true, force: true });
@@ -288,6 +312,7 @@ function draftText(run: Run, result: RunResult | null): string {
   const lines = [`*QA flow: ${run.name}* — ${head}`, `Target: ${run.base_url}`];
   if (s) lines.push(`Result: *${s.passed}/${s.total} passed*${s.failed ? `, ${s.failed} failed` : ''}${s.skipped ? `, ${s.skipped} skipped` : ''} · ${fmtDuration(s.durationMs)}`);
   if (run.instruction.trim()) lines.push(`Scope: ${run.instruction.trim().split('\n')[0].slice(0, 280)}`);
+  if (run.tokens) lines.push(`AI: ${run.tokens.total.toLocaleString('en-US')} tokens${run.cost_usd != null ? ` (~$${run.cost_usd.toFixed(2)})` : ''}`);
   if (result?.tests.length) {
     lines.push('');
     for (const t of result.tests) {
@@ -358,10 +383,18 @@ app.get('/api/dashboard', async () => {
     runs24h: runs.filter((r) => Date.parse(r.created_at) > dayAgo).length,
     passRate: finished.length ? Math.round((finished.filter((r) => r.status === 'passed').length / finished.length) * 100) : null,
     costUsd: runs.reduce((a, r) => a + (r.cost_usd ?? 0), 0),
+    usage: {
+      today: usageSince(new Date(new Date().setHours(0, 0, 0, 0)).toISOString()),
+      last30d: usageSince(new Date(Date.now() - 30 * 86_400_000).toISOString()),
+      allTime: usageSince(),
+    },
     recent: runs.slice(0, 15),
     queue: queueState(),
+    scheduler: schedulerState(),
   };
 });
+
+app.get('/api/scheduler', async () => schedulerState());
 
 registerMcp(app, PORT);
 
