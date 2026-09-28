@@ -314,5 +314,7 @@ export function deleteRun(id: number) {
   db.prepare('DELETE FROM runs WHERE id = ?').run(id);
 }
 
-// Runs left mid-flight by a crash or restart can never finish.
-db.prepare("UPDATE runs SET status = 'error', error = 'Interrupted by a server restart', finished_at = ? WHERE status IN ('queued','generating','running')").run(now());
+/** Runs left mid-flight by a crash or restart can never finish. Call once at server start only. */
+export function failInterruptedRuns() {
+  db.prepare("UPDATE runs SET status = 'error', error = 'Interrupted by a server restart', finished_at = ? WHERE status IN ('queued','generating','running')").run(now());
+}

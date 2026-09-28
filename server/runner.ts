@@ -228,6 +228,8 @@ function playwrightEnv(run: Run, dir: string): NodeJS.ProcessEnv {
     QA_RUN_DIR: dir,
     QA_BASE_URL: baseUrl,
     QA_VARS: JSON.stringify(vars),
+    QA_SECRET_KEYS: JSON.stringify(mergedVariables(run).filter((v) => v.secret).map((v) => v.key)),
+    QA_PW_CLI: PW_CLI,
     QA_HEADLESS: settings.headless ? '1' : '0',
     QA_WORKERS: String(settings.workers),
     QA_TIMEOUT_MS: String(settings.testTimeoutSec * 1000),
@@ -240,8 +242,9 @@ function prepareDir(run: Run): string {
   mkdirSync(dir, { recursive: true });
   copyFileSync(join(HARNESS, 'playwright.config.ts'), join(dir, 'playwright.config.ts'));
   copyFileSync(join(HARNESS, 'qa.ts'), join(dir, 'qa.ts'));
-  // ./pw is the only way the generating agent may run Playwright.
-  writeFileSync(join(dir, 'pw'), `#!/bin/sh\nexec "${process.execPath}" "${PW_CLI}" "$@"\n`);
+  // ./pw is the only way the generating agent may run Playwright; pw.mjs masks secrets in its output.
+  copyFileSync(join(HARNESS, 'pw.mjs'), join(dir, 'pw.mjs'));
+  writeFileSync(join(dir, 'pw'), `#!/bin/sh\nexec "${process.execPath}" "$(dirname "$0")/pw.mjs" "$@"\n`);
   chmodSync(join(dir, 'pw'), 0o755);
   return dir;
 }

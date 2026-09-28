@@ -14,6 +14,7 @@ import {
   listRuns,
   searchRuns,
   usageSince,
+  failInterruptedRuns,
   listTemplates,
   rememberBaseUrl,
   saveSettings,
@@ -31,6 +32,8 @@ import { mcpInstall, mcpStatus, mcpUninstall } from './mcp-install.ts';
 
 const PORT = Number(process.env.PORT ?? 4777);
 const HOST = process.env.HOST ?? '127.0.0.1';
+
+failInterruptedRuns();
 
 const app = Fastify({ logger: { level: 'warn' }, bodyLimit: 5 * 1024 * 1024 });
 

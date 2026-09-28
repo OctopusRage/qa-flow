@@ -1,6 +1,6 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
+import { query, type HookCallback } from '@anthropic-ai/claude-agent-sdk';
 import { writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { getSettings, type Run, type TokenUsage, type Variable } from './db.ts';
 
 const SYSTEM = `You are a senior QA automation engineer. You turn a plain-language test scope into a
@@ -75,6 +75,59 @@ function withTotal(u: TokenUsage): TokenUsage {
   return u;
 }
 
+// Every tool call passes this guard, including commands Claude Code would auto-approve as
+// read-only (cat, env, git log…): the permission list alone does not stop those, and the
+// agent's environment holds secret variable values.
+const SHELL_META = /[;&|`$<>(){}\n\\*?!]/;
+const SAFE_BASH = [
+  /^\.\/pw test(\s+[\w./:=@,+-]+|\s+"[^"]*"|\s+'[^']*')*$/,
+  /^ls(\s+-[a-zA-Z]+)*(\s+[\w./-]+)*$/,
+  /^mkdir(\s+-p)?(\s+[\w./-]+)+$/,
+  /^rm\s+-rf\s+scratch(\/[\w./-]*)?$/,
+];
+// Machine-written artifacts can quote typed values unmasked; the agent does not need them.
+const HIDDEN = [/^results\.json$/, /^report(\/|$)/, /^steps\.jsonl$/, /^run\.log$/];
+
+export function toolGuard(dir: string): HookCallback {
+  const root = resolve(dir);
+  const inside = (p: unknown) => {
+    const abs = resolve(root, String(p ?? '.'));
+    if (abs !== root && !abs.startsWith(root + sep)) return null;
+    return abs === root ? '' : abs.slice(root.length + 1);
+  };
+  const deny = (reason: string) => ({ hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: reason } });
+  const allow = { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'allow' as const } };
+  return async (input) => {
+    if (input.hook_event_name !== 'PreToolUse') return {};
+    const t = (input.tool_input ?? {}) as Record<string, unknown>;
+    switch (input.tool_name) {
+      case 'Bash': {
+        const cmd = String(t.command ?? '').trim();
+        if (SHELL_META.test(cmd.replace(/"[^"]*"|'[^']*'/g, '""')) || !SAFE_BASH.some((re) => re.test(cmd))) {
+          return deny('Only single commands are allowed: ./pw test <file> [flags], ls, mkdir -p <dir>, rm -rf scratch. No pipes, chaining, redirection or other programs.');
+        }
+        return allow;
+      }
+      case 'Read':
+      case 'Write':
+      case 'Edit': {
+        const rel = inside(t.file_path);
+        if (rel === null) return deny('Files outside the run folder are off limits.');
+        if (input.tool_name === 'Read' && HIDDEN.some((re) => re.test(rel))) return deny('That artifact is not available; read the ./pw output, test-output/ or scratch/dumps/ instead.');
+        return allow;
+      }
+      case 'Glob':
+      case 'Grep':
+        if (t.path !== undefined && inside(t.path) === null) return deny('Search inside the run folder only.');
+        return allow;
+      case 'TodoWrite':
+        return allow;
+      default:
+        return deny(`${input.tool_name} is not available in this sandbox.`);
+    }
+  };
+}
+
 const clip = (s: string, n = 400) => (s.length > n ? `${s.slice(0, n)}…` : s);
 
 export async function generateSpec(opts: {
@@ -90,7 +143,13 @@ export async function generateSpec(opts: {
 }): Promise<{ costUsd: number | null; tokens: TokenUsage }> {
   const settings = getSettings();
   const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(opts.env)) if (v !== undefined) env[k] = v;
+  for (const [k, v] of Object.entries(opts.env)) {
+    // A server started from inside a Claude Code session inherits that session's variables
+    // (child-session markers, messaging socket/token, its permission mode). Passing them on
+    // makes the agent behave as part of that session and ignore the permission rules below.
+    if (v === undefined || k === 'CLAUDECODE' || k.startsWith('CLAUDE_CODE_') || k === 'CLAUDE_PID' || k === 'CLAUDE_EFFORT') continue;
+    env[k] = v;
+  }
   if (settings.anthropicApiKey) env.ANTHROPIC_API_KEY = settings.anthropicApiKey;
 
   opts.log(`🤖 Generating the spec with Claude${settings.model ? ` (${settings.model})` : ''}, max ${settings.maxTurns} turns`);
@@ -110,9 +169,9 @@ export async function generateSpec(opts: {
       maxTurns: settings.maxTurns,
       systemPrompt: SYSTEM,
       settingSources: [],
-      // No prompts: anything not listed is denied. Bash is limited to the Playwright wrapper
-      // and a few harmless commands so secrets in the environment stay out of the transcript.
+      // No prompts: anything not listed is denied, and toolGuard vets every call (see above).
       permissionMode: 'dontAsk',
+      hooks: { PreToolUse: [{ hooks: [toolGuard(opts.dir)] }] },
       allowedTools: [
         'Read',
         'Write',

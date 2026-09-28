@@ -50,7 +50,7 @@ export function registerMcp(app: FastifyInstance, port: number) {
       const t = r.tokens;
       const n = (x: number) => x.toLocaleString('en-US');
       lines.push(`AI tokens: ${n(t.total)} (input ${n(t.input)}, output ${n(t.output)}, cache read ${n(t.cacheRead)}, cache write ${n(t.cacheWrite)})${r.cost_usd != null ? ` · ~$${r.cost_usd.toFixed(2)}` : ''}`);
-      for (const [model, m] of Object.entries(t.models ?? {}) as [string, Json][]) lines.push(`  ${model}: ${n(m.input + m.output + m.cacheRead + m.cacheWrite)} tokens, ~$${(m.costUsd ?? 0).toFixed(2)}`);
+      for (const [model, m] of Object.entries(t.models ?? {}) as [string, Json][]) lines.push(`  ${model}: ${n(m.input + m.output + m.cacheRead + m.cacheWrite)} tokens${m.costUsd ? `, ~$${m.costUsd.toFixed(2)}` : ''}`);
     } else if (r.cost_usd != null) lines.push(`AI cost: ~$${r.cost_usd.toFixed(2)}`);
     if (r.error) lines.push(`Error: ${r.error}`);
     if (d.template) lines.push(`Template: #${d.template.id} ${d.template.name}`);
