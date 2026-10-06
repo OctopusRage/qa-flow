@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { api, errorText, fileUrl, fmtDuration, fmtTime, fmtTokens, fmtUsd, isLive, toast, type Run, type RunDetail, type Template, type TokenUsage } from '../api';
+import { api, BASE, errorText, fileUrl, fmtDuration, fmtTime, fmtTokens, fmtUsd, isLive, toast, type Run, type RunDetail, type Template, type TokenUsage } from '../api';
 import StatusBadge from '../components/StatusBadge.vue';
 import SlackDialog from '../components/SlackDialog.vue';
 import Lightbox, { type Shot } from '../components/Lightbox.vue';
@@ -42,7 +42,7 @@ async function load() {
 }
 
 async function loadLog() {
-  logText.value = await fetch(`/api/runs/${runId}/log`).then((r) => r.text());
+  logText.value = await fetch(`${BASE}api/runs/${runId}/log`).then((r) => r.text());
   scrollLog();
 }
 
@@ -54,7 +54,7 @@ function scrollLog() {
 }
 
 function connect() {
-  source = new EventSource(`/api/runs/${runId}/events`);
+  source = new EventSource(`${BASE}api/runs/${runId}/events`);
   source.onmessage = (m) => {
     const e = JSON.parse(m.data) as { type: 'log'; line: string } | { type: 'status'; status: string } | { type: 'usage'; tokens: TokenUsage; costUsd: number | null };
     if (e.type === 'usage') {

@@ -1,10 +1,11 @@
 import { createApp } from 'vue';
 import { createRouter, createWebHistory } from 'vue-router';
 import App from './App.vue';
+import { BASE } from './api';
 import './styles.css';
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory(BASE),
   routes: [
     { path: '/', component: () => import('./views/Dashboard.vue') },
     { path: '/runs', component: () => import('./views/Runs.vue') },

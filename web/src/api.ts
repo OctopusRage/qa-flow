@@ -84,8 +84,15 @@ export type Settings = {
   knowledge: { dir: string; modules: number; flows: number; uiMaps: number; components: number; verified: number; references: number } | null;
 };
 
+/**
+ * Where the app is mounted: "/" when served directly, "/qa-flow/" (say) behind
+ * a reverse proxy. The server injects it into index.html from the proxy's
+ * X-Forwarded-Prefix; every URL the app builds goes through it.
+ */
+export const BASE: string = (window as unknown as { __QA_BASE__?: string }).__QA_BASE__ ?? '/';
+
 export async function api<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
-  const res = await fetch(`/api${path}`, {
+  const res = await fetch(`${BASE}api${path}`, {
     method: init?.method ?? (init?.body ? 'POST' : 'GET'),
     headers: init?.body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
     body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
@@ -95,7 +102,7 @@ export async function api<T>(path: string, init?: { method?: string; body?: unkn
   return json as T;
 }
 
-export const fileUrl = (runId: number, path: string) => `/files/${runId}/${path}`;
+export const fileUrl = (runId: number, path: string) => `${BASE}files/${runId}/${path}`;
 
 export const toastText = ref('');
 let timer: ReturnType<typeof setTimeout> | undefined;

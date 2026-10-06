@@ -436,15 +436,36 @@ app.post('/api/mcp/uninstall', async () => mcpUninstall(MCP_URL));
 
 // ---- static -----------------------------------------------------------------
 
+/**
+ * The SPA page, told where it is mounted. Behind a reverse proxy that serves
+ * qa-flow under a sub-path (probe-coder's dashboard at /qa-flow/), the proxy
+ * strips the prefix and sends it as X-Forwarded-Prefix; the page gets a
+ * <base href> (so the relatively-built assets resolve) and window.__QA_BASE__
+ * (so the router and every API/file URL carry the prefix). Served directly,
+ * there is no header and the base is "/". Only a plain path is accepted.
+ */
+function servePage(prefixHeader: string | string[] | undefined, reply: import('fastify').FastifyReply) {
+  const raw = (Array.isArray(prefixHeader) ? prefixHeader[0] : prefixHeader) ?? '';
+  const prefix = /^\/[A-Za-z0-9_\-/]*$/.test(raw) ? raw.replace(/\/+$/, '') : '';
+  const base = `${prefix}/`;
+  const html = readFileSync(join(ROOT, 'dist', 'index.html'), 'utf8').replace(
+    '<head>',
+    `<head><base href="${base}"><script>window.__QA_BASE__=${JSON.stringify(base)}</script>`,
+  );
+  return reply.type('text/html; charset=utf-8').header('cache-control', 'no-store').send(html);
+}
+
 // Run artifacts: screenshots, the Playwright HTML report, specs.
 await app.register(fastifyStatic, { root: RUNS_DIR, prefix: '/files/', decorateReply: false });
 
 const WEB = join(ROOT, 'dist');
 if (existsSync(WEB)) {
-  await app.register(fastifyStatic, { root: WEB, prefix: '/', wildcard: false });
+  // index: false — the page is never served raw, because it needs the mount
+  // prefix injected (servePage below).
+  await app.register(fastifyStatic, { root: WEB, prefix: '/', wildcard: false, index: false });
   app.setNotFoundHandler((req, reply) => {
     if (req.url.startsWith('/api/') || req.url.startsWith('/files/') || req.url.startsWith('/mcp')) return reply.status(404).send({ error: 'Not found' });
-    return reply.sendFile('index.html');
+    return servePage(req.headers['x-forwarded-prefix'], reply);
   });
 }
 
