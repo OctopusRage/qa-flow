@@ -71,7 +71,7 @@ const hint = (s: string) => (s ? `…${s.slice(-4)}` : '');
 function knowledgeStatus(dir: string) {
   const resolved = resolveKnowledgeDir(dir);
   if (!resolved) return null;
-  const { modules } = summarizeKnowledge(resolved);
+  const { modules, references } = summarizeKnowledge(resolved);
   const maps = modules.flatMap((m) => (m.uiMap ? [m.uiMap] : []));
   return {
     dir: resolved,
@@ -80,6 +80,7 @@ function knowledgeStatus(dir: string) {
     uiMaps: maps.length,
     components: maps.reduce((n, m) => n + m.components, 0),
     verified: maps.reduce((n, m) => n + m.verified, 0),
+    references: references.length,
   };
 }
 
@@ -110,7 +111,7 @@ app.put('/api/settings', async (req) => {
   if (body.clearAnthropicApiKey) patch.anthropicApiKey = '';
   if (body.knowledgeDir !== undefined) {
     const dir = body.knowledgeDir.trim();
-    if (dir && !resolveKnowledgeDir(dir)) throw new HttpError(400, `No flows/ or ui-map/ folder found in ${dir} (or its knowledge/ subfolder)`);
+    if (dir && !resolveKnowledgeDir(dir)) throw new HttpError(400, `No flows/, ui-map/ or reference/ folder found in ${dir} (or its knowledge/ subfolder)`);
     patch.knowledgeDir = dir;
   }
   if (body.variables) {
@@ -344,10 +345,15 @@ function draftText(run: Run, result: RunResult | null): string {
       const failed = t.steps.find((st) => st.status === 'failed');
       const why = t.status === 'failed' || t.status === 'timedOut' ? ` — ${failed ? `step "${failed.title}": ` : ''}${briefError(failed?.error ?? t.error ?? '')}` : '';
       lines.push(`${icon[t.status] ?? '•'} ${t.title} (${t.steps.length} steps)${why}`);
+      // API steps have no screenshot: their calls are the evidence.
+      for (const st of t.steps.filter((x) => !x.screenshot && x.calls?.length)) {
+        const calls = st.calls!.map((c) => `\`${c.method} ${c.url.replace(/^https?:\/\/[^/]+/, '')}\` → ${c.status ?? 'no response'}`);
+        lines.push(`    ${st.status === 'failed' ? '✖' : '✓'} ${st.title}: ${calls.slice(0, 3).join(', ')}${calls.length > 3 ? `, +${calls.length - 3} more` : ''}`);
+      }
     }
   }
   if (run.error) lines.push('', `Error: ${run.error.slice(0, 300)}`);
-  lines.push('', 'Screenshots below 👇');
+  if (result?.tests.some((t) => t.steps.some((st) => st.screenshot))) lines.push('', 'Screenshots below 👇');
   return lines.join('\n');
 }
 

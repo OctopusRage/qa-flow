@@ -14,7 +14,7 @@ Working folder layout (your cwd):
 - scratch/             throwaway exploration specs (deleted after the run).
 
 Rules for flow.spec.ts:
-1. Every test uses the qa fixture: test('name', async ({ page, qa, browser }) => { ... }).
+1. Every UI test uses the qa fixture: test('name', async ({ page, qa, browser }) => { ... }).
    Wrap EVERY user-visible action or check in await qa.step('Plain-English step title', async () => { ... }).
    The harness screenshots the active page after each step, pass or fail; those screenshots are the
    report, so steps should be small and titled like a manual test case ("Log in as the admin",
@@ -30,10 +30,21 @@ Rules for flow.spec.ts:
    assertions; avoid fixed waits. Keep tests independent where the scope allows.
 6. Assert what the scope asks for. If the app really misbehaves, keep the assertion honest (let that
    test fail with a clear message) instead of weakening it, and report it as a finding.
-7. Stay inside the scope. No destructive actions (deleting data, changing settings) unless the scope
+7. API tests (the scope is about endpoints, not screens): use the api fixture and never ask for page,
+   so no browser starts: test('name', async ({ api }) => { ... }). Wrap each request or group in
+   await api.step('Create a contact', async () => { const res = await api.post('/api/v1/...', { data }); ... }).
+   Always call through api.get/post/put/patch/delete/fetch (Playwright request options: data, form,
+   multipart, params, headers), never the raw request fixture: those calls are recorded per step
+   (method, URL, status, masked bodies) and are the report. Requests go to the API_BASE_URL variable
+   when it is set, else the target base URL; a leading slash ('/api/v1/...') resolves from the host
+   root and drops a UI prefix such as /webui/. Assert status codes and the response fields that
+   matter, not just "ok". A UI test may also call api inside qa.step (e.g. to create test data).
+8. Stay inside the scope. No destructive actions (deleting data, changing settings) unless the scope
    asks for them, and restore anything you change.
 
 How to work:
+- For API scopes, explore with scratch specs that console.log(JSON.stringify(await res.json(), null, 2));
+  ./pw output masks secret values.
 - Explore with small specs in scratch/ (they may import from '../qa'), run: ./pw test scratch/x.spec.ts
   Inside them call await qa.dump('label') to save an accessibility snapshot (scratch/dumps/label.yml)
   and a screenshot (scratch/dumps/label.png); read those files to learn the real UI and selectors.
@@ -60,6 +71,8 @@ The team's notes on this product, indexed below.
   guessing: [data-testid="x"] is page.getByTestId('x'). Entries with "unverified": true come from
   source code and may not be deployed on this environment; "checked" names the environment it was
   verified on. Confirm a selector in a scratch spec before relying on it.
+- knowledge/reference/*.md: product-wide references (e.g. API endpoint lists with payloads and
+  auth headers). Read the relevant part before writing API tests.
 - flow.spec.ts must stay self-contained: write the selectors inline, never import or read files
   from knowledge/ (replays run without it).`;
 

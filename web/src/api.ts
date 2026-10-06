@@ -41,7 +41,8 @@ export type Template = {
   runCount?: number;
   runs?: Run[];
 };
-export type Step = { testId: string; test: string; index: number; title: string; status: 'passed' | 'failed' | 'info'; error: string | null; durationMs: number; screenshot: string | null; url: string | null };
+export type Step = { testId: string; test: string; index: number; title: string; status: 'passed' | 'failed' | 'info'; error: string | null; durationMs: number; screenshot: string | null; url: string | null; calls?: ApiCall[] };
+export type ApiCall = { method: string; url: string; status: number | null; durationMs: number; request: string | null; response: string | null; error: string | null };
 export type TestResult = { id: string; title: string; status: string; durationMs: number; retries: number; error: string | null; steps: Step[]; finalScreenshot: string | null };
 export type RunDetail = {
   run: Run;
@@ -80,7 +81,7 @@ export type Settings = {
   variables: Variable[];
   baseUrls: string[];
   knowledgeDir: string;
-  knowledge: { dir: string; modules: number; flows: number; uiMaps: number; components: number; verified: number } | null;
+  knowledge: { dir: string; modules: number; flows: number; uiMaps: number; components: number; verified: number; references: number } | null;
 };
 
 export async function api<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {

@@ -10,9 +10,10 @@ export type KnowledgeModule = {
   flow?: { file: string; description: string };
   uiMap?: { file: string; components: number; verified: number; app?: string; baseRoute?: string };
 };
-export type KnowledgeSummary = { dir: string; modules: KnowledgeModule[] };
+export type KnowledgeSummary = { dir: string; modules: KnowledgeModule[]; references: { file: string; description: string }[] };
 
-const hasPack = (d: string) => existsSync(join(d, 'flows')) || existsSync(join(d, 'ui-map'));
+const SUBDIRS = ['flows', 'ui-map', 'reference'];
+const hasPack = (d: string) => SUBDIRS.some((sub) => existsSync(join(d, sub)));
 
 /** The pack folder itself, or a repo root holding it under knowledge/. Null when neither. */
 export function resolveKnowledgeDir(input: string): string | null {
@@ -55,7 +56,11 @@ export function summarizeKnowledge(dir: string): KnowledgeSummary {
       // A malformed map is skipped rather than failing the run.
     }
   }
-  return { dir, modules: [...modules.values()].sort((a, b) => a.name.localeCompare(b.name)) };
+  const references = files(join(dir, 'reference'), '.md').map((f) => ({
+    file: `reference/${f}`,
+    description: frontmatterDescription(readFileSync(join(dir, 'reference', f), 'utf8')),
+  }));
+  return { dir, modules: [...modules.values()].sort((a, b) => a.name.localeCompare(b.name)), references };
 }
 
 function indexMarkdown(s: KnowledgeSummary): string {
@@ -65,7 +70,13 @@ function indexMarkdown(s: KnowledgeSummary): string {
       : '-';
     return `| ${m.name} | ${m.flow ? `${m.flow.file}: ${m.flow.description || '(no description)'}` : '-'} | ${ui} |`;
   });
-  return ['# Knowledge index', '', '| Module | Flow map | UI map |', '|---|---|---|', ...rows, ''].join('\n');
+  const refs = s.references.map((r) => `- ${r.file}: ${r.description || '(no description)'}`);
+  return [
+    '# Knowledge index',
+    '',
+    ...(rows.length ? ['| Module | Flow map | UI map |', '|---|---|---|', ...rows, ''] : []),
+    ...(refs.length ? ['Reference:', ...refs, ''] : []),
+  ].join('\n');
 }
 
 /** Copies the pack into <runDir>/knowledge and returns the index text for the prompt. */
@@ -73,9 +84,9 @@ export function stageKnowledge(dir: string, runDir: string): { index: string; mo
   const target = join(runDir, 'knowledge');
   rmSync(target, { recursive: true, force: true });
   const summary = summarizeKnowledge(dir);
-  if (!summary.modules.length) return null;
+  if (!summary.modules.length && !summary.references.length) return null;
   mkdirSync(target, { recursive: true });
-  for (const sub of ['flows', 'ui-map']) {
+  for (const sub of SUBDIRS) {
     const src = join(dir, sub);
     if (!existsSync(src)) continue;
     // Only the reference material: .md and .json, no scripts or other tooling.

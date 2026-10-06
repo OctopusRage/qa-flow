@@ -323,8 +323,8 @@ async function execute(runId: number, abort: AbortController) {
   const s = result.summary;
   const passed = code === 0 && s.failed === 0 && s.total > 0;
   log(runId, `Done: ${s.passed} passed, ${s.failed} failed, ${s.skipped} skipped${s.flaky ? `, ${s.flaky} flaky` : ''} in ${(s.durationMs / 1000).toFixed(1)}s`);
-  const missing = result.tests.filter((t) => t.status !== 'skipped' && !t.steps.some((st) => st.screenshot));
-  if (missing.length) log(runId, `⚠ ${missing.length} test(s) have no qa.step() screenshots: ${missing.map((t) => t.title).join(', ')}`);
+  const missing = result.tests.filter((t) => t.status !== 'skipped' && !t.steps.some((st) => st.screenshot || st.calls?.length));
+  if (missing.length) log(runId, `⚠ ${missing.length} test(s) have no qa.step() screenshots or api.step() calls: ${missing.map((t) => t.title).join(', ')}`);
   setStatus(runId, passed ? 'passed' : s.total === 0 ? 'error' : 'failed', {
     summary: s,
     finished_at: now(),
@@ -368,7 +368,19 @@ export type StepRecord = {
   durationMs: number;
   screenshot: string | null;
   url: string | null;
+  /** HTTP calls made through the api fixture during the step. */
+  calls?: ApiCall[];
   at: string;
+};
+
+export type ApiCall = {
+  method: string;
+  url: string;
+  status: number | null;
+  durationMs: number;
+  request: string | null;
+  response: string | null;
+  error: string | null;
 };
 
 export type TestResult = {

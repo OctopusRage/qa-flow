@@ -33,6 +33,7 @@ const shots = computed<Shot[]>(() =>
     t.steps.filter((s) => s.screenshot).map((s) => ({ src: fileUrl(runId, s.screenshot!), caption: `${t.title} › ${s.index}. ${s.title}`, status: s.status })),
   ),
 );
+const capturedSteps = computed(() => tests.value.reduce((n, t) => n + t.steps.filter((s) => s.screenshot || s.calls?.length).length, 0));
 const shotIndex = (path: string) => shots.value.findIndex((s) => s.src === fileUrl(runId, path));
 
 async function load() {
@@ -154,7 +155,7 @@ const canSave = computed(() => !!detail.value?.spec && run.value?.mode === 'gene
       <div class="card stat"><div class="label">Tests</div><div class="value">{{ run.summary.total }}</div></div>
       <div class="card stat"><div class="label">Passed</div><div class="value pass">{{ run.summary.passed }}</div></div>
       <div class="card stat"><div class="label">Failed</div><div class="value" :class="{ fail: run.summary.failed }">{{ run.summary.failed }}</div></div>
-      <div class="card stat"><div class="label">Steps captured</div><div class="value">{{ shots.length }}</div></div>
+      <div class="card stat"><div class="label">Steps captured</div><div class="value">{{ capturedSteps }}</div></div>
     </div>
     <p v-if="run.status === 'queued'" class="notice" style="margin-top: 12px">⏳ {{ detail?.queue.waiting[run.id] ?? 'Waiting for a free run slot' }}</p>
     <p v-if="run.error" class="error-box" style="margin-top: 12px">{{ run.error }}</p>
@@ -214,14 +215,25 @@ const canSave = computed(() => !!detail.value?.spec && run.value?.mode === 'gene
           <span class="muted small">{{ t.steps.length }} steps · {{ fmtDuration(t.durationMs) }}<template v-if="t.retries"> · retry {{ t.retries }}</template></span>
         </div>
         <ol class="flow">
-          <li v-for="s in t.steps" :key="s.index" class="step" :class="s.status">
+          <li v-for="s in t.steps" :key="s.index" class="step" :class="[s.status, { api: !s.screenshot && s.calls?.length }]">
             <button v-if="s.screenshot" class="thumb" :aria-label="`Open screenshot for ${s.title}`" @click="lightbox = shotIndex(s.screenshot)">
               <img :src="fileUrl(run.id, s.screenshot)" :alt="s.title" loading="lazy" />
             </button>
-            <div v-else class="thumb none">no screenshot</div>
+            <div v-else-if="!s.calls?.length" class="thumb none">no screenshot</div>
             <div class="step-body">
               <div class="step-title"><span class="num">{{ s.index }}</span>{{ s.title }}</div>
               <div class="faint small">{{ s.status === 'failed' ? '✖ failed' : s.status === 'info' ? 'snapshot' : '✓ passed' }} · {{ fmtDuration(s.durationMs) }}</div>
+              <details v-for="(c, i) in s.calls ?? []" :key="i" class="call">
+                <summary>
+                  <span class="method">{{ c.method }}</span>
+                  <span class="mono call-url" :title="c.url">{{ c.url }}</span>
+                  <span class="code" :class="c.status == null ? 'bad' : c.status < 300 ? 'good' : c.status < 400 ? 'warn' : 'bad'">{{ c.status ?? 'ERR' }}</span>
+                  <span class="faint small">{{ c.durationMs }} ms</span>
+                </summary>
+                <template v-if="c.request"><div class="faint small">Request</div><pre class="body">{{ c.request }}</pre></template>
+                <template v-if="c.response"><div class="faint small">Response</div><pre class="body">{{ c.response }}</pre></template>
+                <pre v-if="c.error" class="step-error">{{ c.error }}</pre>
+              </details>
               <pre v-if="s.error" class="step-error">{{ s.error }}</pre>
             </div>
           </li>
@@ -297,6 +309,18 @@ const canSave = computed(() => !!detail.value?.spec && run.value?.mode === 'gene
 .step.failed .num { background: var(--fail-soft); color: var(--fail); }
 .step.info .num { background: var(--info-soft); color: var(--info); }
 .step-error { margin: 8px 0 0; font-size: 11.5px; color: var(--fail); white-space: pre-wrap; word-break: break-word; max-height: 160px; overflow: auto; }
+.step.api { grid-column: 1 / -1; }
+.step.api::after { content: none; }
+.call { margin-top: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); }
+.call summary { display: flex; align-items: center; gap: 8px; padding: 6px 8px; cursor: pointer; min-width: 0; }
+.method { font-weight: 600; font-size: 12px; flex: none; }
+.call-url { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.code { flex: none; font-weight: 600; font-size: 12px; padding: 1px 6px; border-radius: 4px; }
+.code.good { color: var(--pass); background: var(--pass-soft); }
+.code.warn { color: var(--info); background: var(--info-soft); }
+.code.bad { color: var(--fail); background: var(--fail-soft); }
+.call > div, .call > pre { margin: 0 8px; }
+.call .body { margin-bottom: 8px; font-size: 11.5px; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px; }
 .notes { white-space: pre-wrap; margin: 0; font: inherit; }
 .tabs button:disabled { opacity: 0.4; cursor: default; }
 </style>

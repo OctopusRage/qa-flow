@@ -74,6 +74,32 @@ test('admin approves a held broadcast', async ({ page, browser, qa }) => {
 `qa.step()` screenshots the active page after every step, passed or failed. The run page shows
 them as a flow; a test without any step screenshot is flagged in the log.
 
+## API tests
+
+Scopes about endpoints rather than screens use the `api` fixture. A test that never asks for `page`
+starts no browser, and each `api.step()` records its calls (method, URL, status, request and response
+bodies) in place of a screenshot:
+
+```ts
+test('admin lists contacts', async ({ api }) => {
+  let token = '';
+  await api.step('Log in as the admin', async () => {
+    const res = await api.post('/api/v1/auth', { data: { email: v('ADMIN_EMAIL'), password: v('ADMIN_PASSWORD') } });
+    expect(res.status()).toBe(200);
+    token = (await res.json()).data.user.authentication_token;
+  });
+  await api.step('List contacts', async () => {
+    const res = await api.get('/api/v1/contacts', { headers: { Authorization: token } });
+    expect(res.status()).toBe(200);
+  });
+});
+```
+
+Requests go to the `API_BASE_URL` variable when set, else the run's base URL; a leading slash resolves
+from the host root (so `/api/v1/…` skips a `/webui/` prefix). Recorded bodies mask secret variable
+values and fields named like password/token/secret/key, and are cut at 4,000 characters. UI tests can
+call `api` inside `qa.step()` too, e.g. to create test data; those calls show under the screenshot.
+
 ## Variables and secrets
 
 Settings (shared, can be secret) < template (non-secret defaults) < run overrides. Specs read them
@@ -89,6 +115,7 @@ root that keeps them under `knowledge/`):
 |---|---|
 | `flows/<module>.md` | How the module behaves: roles, routes, endpoints, rules, known bugs. Frontmatter `description:` shows in the index. |
 | `ui-map/<module>.json` | `{"components": {"<logical.id>": {"sel": ["[data-testid=\"…\"]"], "route": "…", "unverified": true?}}}` |
+| `reference/*.md` | Product-wide references, e.g. API endpoint lists with payloads and auth headers. |
 
 Each AI run gets a copy in `knowledge/` (only `.md` and `.json`) plus an index of the modules in its
 prompt. The agent reads the matching flow maps before exploring and uses the selectors, but writes them

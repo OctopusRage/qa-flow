@@ -125,16 +125,16 @@ const removeUrl = (u: string) => s.value && (s.value.baseUrls = s.value.baseUrls
         <h2>Knowledge pack</h2>
         <p class="muted small" style="margin-top: -6px">
           Optional notes about the app under test, given to the AI on generated runs: <code>flows/&lt;module&gt;.md</code> (how each module behaves)
-          and <code>ui-map/&lt;module&gt;.json</code> (logical ids → selectors). Replays don't use it.
+          <code>ui-map/&lt;module&gt;.json</code> (logical ids → selectors) and <code>reference/*.md</code> (e.g. API endpoint lists). Replays don't use it.
         </p>
         <label class="field">
           <span>Folder</span>
           <input v-model="s.knowledgeDir" type="text" placeholder="~/qa-core-skill/knowledge" spellcheck="false" />
-          <small>A folder holding <code>flows/</code> and/or <code>ui-map/</code>, or a repo root with them under <code>knowledge/</code>. Copied into each AI run and removed afterwards.</small>
+          <small>A folder holding any of those, or a repo root with them under <code>knowledge/</code>. Copied into each AI run and removed afterwards.</small>
         </label>
         <p v-if="s.knowledge" class="small" style="margin: 0; color: var(--pass)">
           ✓ {{ s.knowledge.modules }} modules: {{ s.knowledge.flows }} flow maps, {{ s.knowledge.uiMaps }} UI maps
-          ({{ s.knowledge.components }} ids, {{ s.knowledge.verified }} live-verified) <span class="muted mono">{{ s.knowledge.dir }}</span>
+          ({{ s.knowledge.components }} ids, {{ s.knowledge.verified }} live-verified), {{ s.knowledge.references }} reference docs <span class="muted mono">{{ s.knowledge.dir }}</span>
         </p>
       </section>
 

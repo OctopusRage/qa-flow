@@ -58,6 +58,7 @@ export function registerMcp(app: FastifyInstance, port: number) {
       lines.push('', `[${t.status}] ${t.title}`);
       for (const s of t.steps) {
         lines.push(`  ${s.index}. ${s.status === 'failed' ? '✖' : '✓'} ${s.title}${s.screenshot ? `  (screenshot: ${s.screenshot})` : ''}`);
+        for (const c of s.calls ?? []) lines.push(`     ${c.method} ${c.url} → ${c.status ?? c.error?.split('\n')[0] ?? 'no response'} (${c.durationMs} ms)`);
         if (s.error) lines.push(`     ${s.error.split('\n').slice(0, 6).join('\n     ')}`);
       }
       if (t.error && !t.steps.some((s: Json) => s.error)) lines.push(`  error: ${t.error.split('\n').slice(0, 6).join(' | ')}`);
@@ -69,7 +70,7 @@ export function registerMcp(app: FastifyInstance, port: number) {
     }
     return text(lines.join('\n'), {
       run: r,
-      tests: (d.result?.tests ?? []).map((t: Json) => ({ title: t.title, status: t.status, steps: t.steps.map((s: Json) => ({ index: s.index, title: s.title, status: s.status, error: s.error, screenshot: s.screenshot })) })),
+      tests: (d.result?.tests ?? []).map((t: Json) => ({ title: t.title, status: t.status, steps: t.steps.map((s: Json) => ({ index: s.index, title: s.title, status: s.status, error: s.error, screenshot: s.screenshot, calls: s.calls })) })),
       url: runLink(r.id),
     });
   }

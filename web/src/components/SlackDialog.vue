@@ -89,7 +89,7 @@ async function post() {
             <span>{{ img.step }}</span>
           </label>
         </div>
-        <p v-else class="muted">This run has no step screenshots.</p>
+        <p v-else class="muted">This run has no step screenshots (API steps are listed in the text).</p>
         <p v-if="error" class="error-box">{{ error }}</p>
         <div class="row" style="margin-top: 16px; justify-content: flex-end">
           <button class="btn" @click="emit('close')">Cancel</button>
