@@ -49,13 +49,28 @@ function describeVariables(vars: Variable[]): string {
     .join('\n');
 }
 
-function buildPrompt(run: Run, variables: Variable[], existingSpec: string): string {
+const KNOWLEDGE = `## Knowledge pack (read-only reference in knowledge/)
+The team's notes on this product, indexed below.
+- knowledge/flows/<module>.md: how a module behaves (roles, routes, endpoints, business rules, known
+  bugs). Before exploring, read the flow map of every module the scope touches (Grep it for the
+  feature's keywords if it is long) and use it to choose what to assert. When the live app
+  contradicts it, trust the app and mention the difference in your summary.
+- knowledge/ui-map/<module>.json: "components" maps logical ids to selector chains ("sel", first match
+  wins) plus "route" and notes. Grep it for the screen you need, and prefer those selectors over
+  guessing: [data-testid="x"] is page.getByTestId('x'). Entries with "unverified": true come from
+  source code and may not be deployed on this environment; "checked" names the environment it was
+  verified on. Confirm a selector in a scratch spec before relying on it.
+- flow.spec.ts must stay self-contained: write the selectors inline, never import or read files
+  from knowledge/ (replays run without it).`;
+
+function buildPrompt(run: Run, variables: Variable[], existingSpec: string, knowledgeIndex: string | null): string {
   const parts = [
     `Target base URL: ${run.base_url}`,
     `Flow name: ${run.name}`,
     `## Test scope\n${run.instruction || '(no extra instruction: cover the main happy path of the flow name)'}`,
     `## Variables available through v('KEY')\n${describeVariables(variables)}`,
   ];
+  if (knowledgeIndex) parts.push(`${KNOWLEDGE}\n\n${knowledgeIndex.replace(/^# .*\n\n/, '')}`);
   if (existingSpec) {
     parts.push(
       `## Existing flow.spec.ts\nflow.spec.ts already holds the previous version of this flow. Run it first; ` +
@@ -136,6 +151,8 @@ export async function generateSpec(opts: {
   env: NodeJS.ProcessEnv;
   variables: Variable[];
   existingSpec: string;
+  /** Index of the knowledge pack staged in dir/knowledge, if any. */
+  knowledgeIndex?: string | null;
   abort: AbortController;
   log: (line: string) => void;
   /** Called whenever the token tally changes (live progress). */
@@ -160,7 +177,7 @@ export async function generateSpec(opts: {
   const counted = new Map<string, { input: number; output: number; cacheRead: number; cacheWrite: number }>();
 
   const stream = query({
-    prompt: buildPrompt(opts.run, opts.variables, opts.existingSpec),
+    prompt: buildPrompt(opts.run, opts.variables, opts.existingSpec, opts.knowledgeIndex ?? null),
     options: {
       cwd: opts.dir,
       env,

@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { resolveKnowledgeDir, summarizeKnowledge } from './knowledge.ts';
 import {
   ROOT,
   RUNS_DIR,
@@ -67,9 +68,25 @@ const mustRun = (id: number) => getRun(id) ?? (() => { throw new HttpError(404, 
 
 const hint = (s: string) => (s ? `…${s.slice(-4)}` : '');
 
+function knowledgeStatus(dir: string) {
+  const resolved = resolveKnowledgeDir(dir);
+  if (!resolved) return null;
+  const { modules } = summarizeKnowledge(resolved);
+  const maps = modules.flatMap((m) => (m.uiMap ? [m.uiMap] : []));
+  return {
+    dir: resolved,
+    modules: modules.length,
+    flows: modules.filter((m) => m.flow).length,
+    uiMaps: maps.length,
+    components: maps.reduce((n, m) => n + m.components, 0),
+    verified: maps.reduce((n, m) => n + m.verified, 0),
+  };
+}
+
 function publicSettings(s: Settings) {
   return {
     ...s,
+    knowledge: knowledgeStatus(s.knowledgeDir),
     slackToken: '',
     slackTokenHint: hint(s.slackToken),
     anthropicApiKey: '',
@@ -91,6 +108,11 @@ app.put('/api/settings', async (req) => {
   if (body.clearSlackToken) patch.slackToken = '';
   if (body.anthropicApiKey) patch.anthropicApiKey = body.anthropicApiKey.trim();
   if (body.clearAnthropicApiKey) patch.anthropicApiKey = '';
+  if (body.knowledgeDir !== undefined) {
+    const dir = body.knowledgeDir.trim();
+    if (dir && !resolveKnowledgeDir(dir)) throw new HttpError(400, `No flows/ or ui-map/ folder found in ${dir} (or its knowledge/ subfolder)`);
+    patch.knowledgeDir = dir;
+  }
   if (body.variables) {
     // Secrets come back blank from GET: blank means "keep the stored value".
     patch.variables = body.variables

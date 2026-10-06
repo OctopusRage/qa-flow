@@ -79,6 +79,8 @@ export type Settings = {
   cpuLimitPercent: number;
   variables: Variable[];
   baseUrls: string[];
+  knowledgeDir: string;
+  knowledge: { dir: string; modules: number; flows: number; uiMaps: number; components: number; verified: number } | null;
 };
 
 export async function api<T>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {

@@ -131,6 +131,8 @@ export type Settings = {
   cpuLimitPercent: number;
   variables: Variable[];
   baseUrls: string[];
+  /** Optional knowledge pack (flows/*.md, ui-map/*.json) handed to the AI on generate runs. */
+  knowledgeDir: string;
 };
 
 const DEFAULTS: Settings = {
@@ -148,6 +150,7 @@ const DEFAULTS: Settings = {
   cpuLimitPercent: 75,
   variables: [],
   baseUrls: [],
+  knowledgeDir: '',
 };
 
 export function getSettings(): Settings {

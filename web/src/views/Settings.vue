@@ -31,6 +31,7 @@ async function save(extra: Record<string, unknown> = {}) {
         cpuLimitPercent: Number(s.value.cpuLimitPercent),
         variables: s.value.variables,
         baseUrls: s.value.baseUrls,
+        knowledgeDir: s.value.knowledgeDir,
         slackToken: slackToken.value || undefined,
         anthropicApiKey: anthropicKey.value || undefined,
         ...extra,
@@ -118,6 +119,23 @@ const removeUrl = (u: string) => s.value && (s.value.baseUrls = s.value.baseUrls
           <input v-model="anthropicKey" type="password" autocomplete="off" :placeholder="s.anthropicApiKeyHint ? `Saved (${s.anthropicApiKeyHint})` : 'Blank = use your Claude Code login'" />
           <small v-if="s.anthropicApiKeyHint"><a href="#" @click.prevent="save({ clearAnthropicApiKey: true })">Remove key</a></small>
         </label>
+      </section>
+
+      <section class="card">
+        <h2>Knowledge pack</h2>
+        <p class="muted small" style="margin-top: -6px">
+          Optional notes about the app under test, given to the AI on generated runs: <code>flows/&lt;module&gt;.md</code> (how each module behaves)
+          and <code>ui-map/&lt;module&gt;.json</code> (logical ids → selectors). Replays don't use it.
+        </p>
+        <label class="field">
+          <span>Folder</span>
+          <input v-model="s.knowledgeDir" type="text" placeholder="~/qa-core-skill/knowledge" spellcheck="false" />
+          <small>A folder holding <code>flows/</code> and/or <code>ui-map/</code>, or a repo root with them under <code>knowledge/</code>. Copied into each AI run and removed afterwards.</small>
+        </label>
+        <p v-if="s.knowledge" class="small" style="margin: 0; color: var(--pass)">
+          ✓ {{ s.knowledge.modules }} modules: {{ s.knowledge.flows }} flow maps, {{ s.knowledge.uiMaps }} UI maps
+          ({{ s.knowledge.components }} ids, {{ s.knowledge.verified }} live-verified) <span class="muted mono">{{ s.knowledge.dir }}</span>
+        </p>
       </section>
 
       <section id="concurrency" class="card">

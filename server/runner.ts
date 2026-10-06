@@ -17,6 +17,7 @@ import {
   type Variable,
 } from './db.ts';
 import { generateSpec } from './agent.ts';
+import { resolveKnowledgeDir, stageKnowledge, unstageKnowledge } from './knowledge.ts';
 import { MB, fmtBytes, sample } from './resources.ts';
 
 const PW_CLI = join(ROOT, 'node_modules', '@playwright', 'test', 'cli.js');
@@ -195,6 +196,8 @@ function start(run: Run) {
     .finally(() => {
       // Secret values only live in the environment, but drop anything a spec may have written.
       rmSync(join(runDir(run.id), 'scratch'), { recursive: true, force: true });
+      // A copy of the knowledge pack is reference for the agent, not a run artifact.
+      unstageKnowledge(runDir(run.id));
       active.delete(run.id);
       pump();
     });
@@ -267,6 +270,11 @@ async function execute(runId: number, abort: AbortController) {
     const template = run.template_id ? getTemplate(run.template_id) : undefined;
     const existing = template?.spec || '';
     if (existing && !existsSync(join(dir, 'flow.spec.ts'))) writeFileSync(join(dir, 'flow.spec.ts'), existing);
+    const settings = getSettings();
+    const packDir = resolveKnowledgeDir(settings.knowledgeDir);
+    if (settings.knowledgeDir && !packDir) log(runId, `⚠ Knowledge pack not found at ${settings.knowledgeDir}; generating without it`);
+    const knowledge = packDir ? stageKnowledge(packDir, dir) : null;
+    if (knowledge) log(runId, `📚 Knowledge pack from ${packDir} (${knowledge.modules} modules)`);
     // Persist the tally as it grows (throttled) so a canceled or crashed run still shows its spend.
     let lastSave = 0;
     const latest: { value: { tokens: TokenUsage; costUsd: number | null } | null } = { value: null };
@@ -285,6 +293,7 @@ async function execute(runId: number, abort: AbortController) {
         env,
         variables: mergedVariables(run),
         existingSpec: existing,
+        knowledgeIndex: knowledge?.index,
         abort,
         log: (l) => log(runId, l),
         onUsage: (t, c) => saveUsage(t, c),

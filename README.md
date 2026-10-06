@@ -80,6 +80,21 @@ Settings (shared, can be secret) < template (non-secret defaults) < run override
 with `v('KEY')`. The AI is told only the key names of secret variables, and its Bash access is
 limited to `./pw test …`, `ls`, `mkdir` and removing `scratch/`, so it cannot dump the environment.
 
+## Knowledge pack
+
+Settings › Knowledge pack points AI runs at a folder of notes about the app under test (or a repo
+root that keeps them under `knowledge/`):
+
+| Path | Content |
+|---|---|
+| `flows/<module>.md` | How the module behaves: roles, routes, endpoints, rules, known bugs. Frontmatter `description:` shows in the index. |
+| `ui-map/<module>.json` | `{"components": {"<logical.id>": {"sel": ["[data-testid=\"…\"]"], "route": "…", "unverified": true?}}}` |
+
+Each AI run gets a copy in `knowledge/` (only `.md` and `.json`) plus an index of the modules in its
+prompt. The agent reads the matching flow maps before exploring and uses the selectors, but writes them
+inline, so `flow.spec.ts` stays self-contained and replays don't need the pack. The copy is removed
+when the run ends. The folder is read fresh on every run, so a `git pull` there updates it.
+
 ## Run history and AI usage
 
 **Runs** lists every run with filters kept in the URL: date presets (today, yesterday, last 7 / 30
