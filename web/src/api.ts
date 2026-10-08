@@ -1,7 +1,7 @@
 import { ref } from 'vue';
 
 export type Variable = { key: string; value: string; secret?: boolean; isSet?: boolean };
-export type RunStatus = 'queued' | 'generating' | 'running' | 'passed' | 'failed' | 'error' | 'canceled';
+export type RunStatus = 'queued' | 'generating' | 'running' | 'passed' | 'failed' | 'incomplete' | 'error' | 'canceled';
 export type RunSummary = { total: number; passed: number; failed: number; skipped: number; flaky: number; durationMs: number };
 export type Run = {
   id: number;

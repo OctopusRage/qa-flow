@@ -123,7 +123,7 @@ table.list tr.clickable:hover td { background: var(--surface-2); }
 .badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .badge.passed { background: var(--pass-soft); color: var(--pass); }
 .badge.failed, .badge.error, .badge.timedOut { background: var(--fail-soft); color: var(--fail); }
-.badge.flaky, .badge.canceled { background: var(--warn-soft); color: var(--warn); }
+.badge.flaky, .badge.canceled, .badge.incomplete { background: var(--warn-soft); color: var(--warn); }
 .badge.running, .badge.generating, .badge.queued { background: var(--info-soft); color: var(--info); }
 .badge.running::before, .badge.generating::before { animation: pulse 1.2s infinite; }
 @keyframes pulse { 50% { opacity: 0.25; } }

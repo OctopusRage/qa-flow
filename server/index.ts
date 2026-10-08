@@ -334,7 +334,14 @@ function briefError(error: string): string {
 
 function draftText(run: Run, result: RunResult | null): string {
   const s = run.summary;
-  const head = run.status === 'passed' ? '✅ Passed' : run.status === 'failed' ? '❌ Failed' : `⚠️ ${run.status}`;
+  const head =
+    run.status === 'passed'
+      ? '✅ Passed'
+      : run.status === 'failed'
+        ? '❌ Failed'
+        : run.status === 'incomplete'
+          ? '⚠️ Incomplete — not every test ran'
+          : `⚠️ ${run.status}`;
   const lines = [`*QA flow: ${run.name}* — ${head}`, `Target: ${run.base_url}`];
   if (s) lines.push(`Result: *${s.passed}/${s.total} passed*${s.failed ? `, ${s.failed} failed` : ''}${s.skipped ? `, ${s.skipped} skipped` : ''} · ${fmtDuration(s.durationMs)}`);
   if (run.instruction.trim()) lines.push(`Scope: ${run.instruction.trim().split('\n')[0].slice(0, 280)}`);

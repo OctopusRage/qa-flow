@@ -322,10 +322,14 @@ async function execute(runId: number, abort: AbortController) {
   writeFileSync(join(dir, 'result.json'), JSON.stringify(result, null, 2));
   const s = result.summary;
   const passed = code === 0 && s.failed === 0 && s.total > 0;
+  // A skipped test proved nothing, so a run with one is not a pass. Playwright
+  // exits 0 when every test calls test.skip() on an unmet precondition — "0/2
+  // passed, 2 skipped" was reported as ✅ Passed.
+  const incomplete = passed && s.skipped > 0;
   log(runId, `Done: ${s.passed} passed, ${s.failed} failed, ${s.skipped} skipped${s.flaky ? `, ${s.flaky} flaky` : ''} in ${(s.durationMs / 1000).toFixed(1)}s`);
   const missing = result.tests.filter((t) => t.status !== 'skipped' && !t.steps.some((st) => st.screenshot || st.calls?.length));
   if (missing.length) log(runId, `⚠ ${missing.length} test(s) have no qa.step() screenshots or api.step() calls: ${missing.map((t) => t.title).join(', ')}`);
-  setStatus(runId, passed ? 'passed' : s.total === 0 ? 'error' : 'failed', {
+  setStatus(runId, incomplete ? 'incomplete' : passed ? 'passed' : s.total === 0 ? 'error' : 'failed', {
     summary: s,
     finished_at: now(),
     error: s.total === 0 ? result.error ?? 'No tests ran' : null,

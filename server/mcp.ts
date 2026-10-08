@@ -168,7 +168,7 @@ export function registerMcp(app: FastifyInstance, port: number) {
         inputSchema: {
           from: z.string().optional().describe('Start date/time, inclusive: YYYY-MM-DD (UTC) or ISO timestamp'),
           to: z.string().optional().describe('End date/time, exclusive: YYYY-MM-DD (UTC) or ISO timestamp'),
-          status: z.array(z.enum(['queued', 'generating', 'running', 'passed', 'failed', 'error', 'canceled'])).optional(),
+          status: z.array(z.enum(['queued', 'generating', 'running', 'passed', 'failed', 'incomplete', 'error', 'canceled'])).optional(),
           templateId: z.number().int().optional(),
           query: z.string().optional().describe('Matches run name, base URL, or run id'),
           limit: z.number().int().min(1).max(200).optional(),

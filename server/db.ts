@@ -69,7 +69,7 @@ export type Template = {
   updated_at: string;
 };
 
-export type RunStatus = 'queued' | 'generating' | 'running' | 'passed' | 'failed' | 'error' | 'canceled';
+export type RunStatus = 'queued' | 'generating' | 'running' | 'passed' | 'failed' | 'incomplete' | 'error' | 'canceled';
 
 export type RunSummary = { total: number; passed: number; failed: number; skipped: number; flaky: number; durationMs: number };
 

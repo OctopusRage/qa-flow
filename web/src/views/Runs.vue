@@ -17,7 +17,7 @@ const presets: { key: Preset; label: string }[] = [
   { key: '30d', label: 'Last 30 days' },
   { key: 'custom', label: 'Custom' },
 ];
-const statuses = ['passed', 'failed', 'error', 'canceled', 'running', 'generating', 'queued'];
+const statuses = ['passed', 'failed', 'incomplete', 'error', 'canceled', 'running', 'generating', 'queued'];
 
 const q = (k: string) => (typeof route.query[k] === 'string' ? (route.query[k] as string) : '');
 const preset = ref<Preset>((q('range') as Preset) || 'all');
