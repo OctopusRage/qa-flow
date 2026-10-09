@@ -132,7 +132,7 @@ Do not send to any number other than TEST_PHONE."
           </template>
           <template v-else>none. Add shared credentials in <RouterLink to="/settings">Settings</RouterLink>.</template>
         </p>
-        <VarsEditor v-model="variables" />
+        <VarsEditor v-model="variables" allow-secret />
       </details>
 
       <p v-if="error" class="error-box">{{ error }}</p>

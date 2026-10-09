@@ -167,6 +167,19 @@ const canSave = computed(() => !!detail.value?.spec && run.value?.mode === 'gene
       </template>
     </p>
 
+    <details v-if="run.variables.length" class="card vars-used">
+      <summary><strong>Variables</strong> <span class="muted small">· {{ run.variables.length }} passed to this run</span></summary>
+      <dl>
+        <template v-for="v in run.variables" :key="v.key">
+          <dt class="mono">{{ v.key }}</dt>
+          <dd class="mono">
+            <template v-if="v.secret"><span class="faint">{{ v.isSet ? '••••••' : '(empty)' }}</span> <span class="badge">secret</span></template>
+            <template v-else>{{ v.value || '(empty — falls back to the template or Settings)' }}</template>
+          </dd>
+        </template>
+      </dl>
+    </details>
+
     <section v-if="run.tokens" class="card usage">
       <div class="row" style="margin-bottom: 10px">
         <h2 style="margin: 0">AI usage</h2>
@@ -281,6 +294,10 @@ const canSave = computed(() => !!detail.value?.spec && run.value?.mode === 'gene
 
 <style scoped>
 .usage { margin-top: 16px; }
+.vars-used { margin-top: 16px; }
+.vars-used summary { cursor: pointer; }
+.vars-used dl { display: grid; grid-template-columns: minmax(120px, max-content) 1fr; gap: 6px 16px; margin: 12px 0 0; }
+.vars-used dd { margin: 0; word-break: break-all; }
 .usage-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .usage-grid div { display: flex; flex-direction: column; }
 .models { margin-top: 12px; }

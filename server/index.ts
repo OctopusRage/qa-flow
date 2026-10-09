@@ -24,6 +24,7 @@ import {
   now,
   type Run,
   type Settings,
+  type Template,
   type Variable,
 } from './db.ts';
 import { cancel, enqueue, events, isActive, queueState, readResult, runDir, schedulerState, type RunEvent, type RunResult } from './runner.ts';
@@ -64,6 +65,22 @@ const idParam = (p: unknown) => {
 const sourceOf = (req: { headers: Record<string, unknown> }) => (req.headers['x-qa-source'] === 'mcp' ? 'mcp' : 'ui');
 const mustRun = (id: number) => getRun(id) ?? (() => { throw new HttpError(404, 'Run not found'); })();
 
+// Secret values (passwords) never leave the server: the UI gets the key, the flag and whether it is set.
+const maskVars = (vars: Variable[]) => vars.map((v) => (v.secret ? { ...v, value: '', isSet: v.value !== '' } : v));
+const publicRun = (run: Run) => ({ ...run, variables: maskVars(run.variables) });
+const publicTemplate = (t: Template) => ({ ...t, variables: maskVars(t.variables) });
+
+/** Variables from an editor that saw masked secrets: a blank secret keeps the stored value. */
+function keepSecrets(next: Variable[], prev: Variable[]): Variable[] {
+  return next
+    .filter((v) => v.key?.trim())
+    .map((v) => {
+      const key = v.key.trim();
+      const old = prev.find((p) => p.key === key);
+      return { key, value: v.secret && (v.value ?? '') === '' && old ? old.value : v.value ?? '', secret: !!v.secret };
+    });
+}
+
 // ---- settings -------------------------------------------------------------
 
 const hint = (s: string) => (s ? `…${s.slice(-4)}` : '');
@@ -92,7 +109,7 @@ function publicSettings(s: Settings) {
     slackTokenHint: hint(s.slackToken),
     anthropicApiKey: '',
     anthropicApiKeyHint: hint(s.anthropicApiKey),
-    variables: s.variables.map((v) => (v.secret ? { ...v, value: '', isSet: v.value !== '' } : v)),
+    variables: maskVars(s.variables),
   };
 }
 
@@ -116,13 +133,7 @@ app.put('/api/settings', async (req) => {
   }
   if (body.variables) {
     // Secrets come back blank from GET: blank means "keep the stored value".
-    patch.variables = body.variables
-      .filter((v) => v.key.trim())
-      .map((v) => {
-        const key = v.key.trim();
-        const prev = current.variables.find((p) => p.key === key);
-        return { key, value: v.secret && v.value === '' && prev ? prev.value : v.value, secret: !!v.secret };
-      });
+    patch.variables = keepSecrets(body.variables, current.variables);
   }
   saveSettings(patch);
   return publicSettings(getSettings());
@@ -141,15 +152,15 @@ function templateStats(id: number) {
   return { lastRun: runs[0] ?? null, runCount: runs.length };
 }
 
-app.get('/api/templates', async () => listTemplates().map((t) => ({ ...t, ...templateStats(t.id) })));
+app.get('/api/templates', async () => listTemplates().map((t) => ({ ...publicTemplate(t), ...templateStats(t.id) })));
 
 app.get('/api/templates/:id', async (req) => {
   const t = getTemplate(idParam(req.params));
   if (!t) throw new HttpError(404, 'Template not found');
-  return { ...t, runs: listRuns(30, t.id) };
+  return { ...publicTemplate(t), runs: listRuns(30, t.id).map(publicRun) };
 });
 
-function templateBody(body: Record<string, unknown>) {
+function templateBody(body: Record<string, unknown>, prev: Variable[] = []) {
   const name = String(body.name ?? '').trim();
   if (!name) throw new HttpError(400, 'Name is required');
   return {
@@ -158,16 +169,17 @@ function templateBody(body: Record<string, unknown>) {
     instruction: String(body.instruction ?? ''),
     base_url: String(body.base_url ?? ''),
     spec: String(body.spec ?? ''),
-    variables: ((body.variables as Variable[]) ?? []).filter((v) => v.key?.trim()).map((v) => ({ key: v.key.trim(), value: v.value ?? '' })),
+    variables: keepSecrets((body.variables as Variable[]) ?? [], prev),
   };
 }
 
-app.post('/api/templates', async (req) => saveTemplate(templateBody(req.body as Record<string, unknown>)));
+app.post('/api/templates', async (req) => publicTemplate(saveTemplate(templateBody(req.body as Record<string, unknown>))));
 
 app.put('/api/templates/:id', async (req) => {
   const id = idParam(req.params);
-  if (!getTemplate(id)) throw new HttpError(404, 'Template not found');
-  return saveTemplate({ id, ...templateBody(req.body as Record<string, unknown>) });
+  const current = getTemplate(id);
+  if (!current) throw new HttpError(404, 'Template not found');
+  return publicTemplate(saveTemplate({ id, ...templateBody(req.body as Record<string, unknown>, current.variables) }));
 });
 
 app.delete('/api/templates/:id', async (req) => {
@@ -179,7 +191,7 @@ app.delete('/api/templates/:id', async (req) => {
 
 app.get('/api/runs', async (req) => {
   const q = req.query as { templateId?: string; limit?: string };
-  return listRuns(Number(q.limit ?? 100), q.templateId ? Number(q.templateId) : undefined);
+  return listRuns(Number(q.limit ?? 100), q.templateId ? Number(q.templateId) : undefined).map(publicRun);
 });
 
 /** Accepts an ISO timestamp or YYYY-MM-DD (UTC day start). */
@@ -192,7 +204,7 @@ function isoParam(v: string | undefined, name: string): string | undefined {
 
 app.get('/api/runs/search', async (req) => {
   const q = req.query as Record<string, string | undefined>;
-  return searchRuns({
+  const found = searchRuns({
     from: isoParam(q.from, 'from'),
     to: isoParam(q.to, 'to'),
     status: q.status ? q.status.split(',').filter(Boolean) : undefined,
@@ -202,6 +214,7 @@ app.get('/api/runs/search', async (req) => {
     limit: q.limit ? Number(q.limit) : undefined,
     offset: q.offset ? Number(q.offset) : undefined,
   });
+  return { ...found, items: found.items.map(publicRun) };
 });
 
 app.post('/api/runs', async (req) => {
@@ -232,7 +245,7 @@ app.post('/api/runs', async (req) => {
   });
   rememberBaseUrl(baseUrl);
   enqueue(run.id);
-  return run;
+  return publicRun(run);
 });
 
 app.get('/api/runs/:id', async (req) => {
@@ -240,12 +253,15 @@ app.get('/api/runs/:id', async (req) => {
   const dir = runDir(run.id);
   const read = (f: string) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), 'utf8') : null);
   return {
-    run,
+    run: publicRun(run),
     result: readResult(run.id),
     spec: read('flow.spec.ts'),
     agentSummary: read('agent-summary.md'),
     hasReport: existsSync(join(dir, 'report', 'index.html')),
-    template: run.template_id ? getTemplate(run.template_id) ?? null : null,
+    template: (() => {
+      const t = run.template_id ? getTemplate(run.template_id) : undefined;
+      return t ? publicTemplate(t) : null;
+    })(),
     queue: queueState(),
   };
 });
@@ -288,7 +304,7 @@ app.post('/api/runs/:id/rerun', async (req) => {
     source: sourceOf(req),
   });
   enqueue(run.id);
-  return run;
+  return publicRun(run);
 });
 
 app.delete('/api/runs/:id', async (req) => {
@@ -314,11 +330,25 @@ app.post('/api/runs/:id/save-template', async (req) => {
     instruction: run.instruction,
     base_url: target?.base_url || run.base_url,
     spec,
-    variables: target?.variables ?? run.variables.filter((v) => !v.secret),
+    // The run's variables, secrets included, are what this spec passed with: a replay of the
+    // template needs every one of them (a dropped password failed every test with "Missing
+    // variable ADMIN_PASSWORD"). They are stored server-side and masked in every response.
+    variables: withRunVariables(target?.variables ?? [], run.variables),
   });
   if (!run.template_id) updateRun(run.id, { template_id: saved.id });
-  return saved;
+  return publicTemplate(saved);
 });
+
+/** The template's variables, overridden by the run's (a blank run value keeps the template's). */
+function withRunVariables(template: Variable[], run: Variable[]): Variable[] {
+  const map = new Map(template.map((v) => [v.key, v]));
+  for (const v of run) {
+    const prev = map.get(v.key);
+    if (prev && v.value === '') continue;
+    map.set(v.key, { key: v.key, value: v.value, secret: !!(v.secret || prev?.secret) });
+  }
+  return [...map.values()];
+}
 
 // ---- slack ----------------------------------------------------------------
 
@@ -426,7 +456,7 @@ app.get('/api/dashboard', async () => {
       last30d: usageSince(new Date(Date.now() - 30 * 86_400_000).toISOString()),
       allTime: usageSince(),
     },
-    recent: runs.slice(0, 15),
+    recent: runs.slice(0, 15).map(publicRun),
     queue: queueState(),
     scheduler: schedulerState(),
   };

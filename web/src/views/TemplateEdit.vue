@@ -92,9 +92,9 @@ async function remove() {
         </label>
         <label class="field">
           <span>Template variables</span>
-          <small style="margin: 0 0 8px">Non-secret defaults (app code, phone, IDs). Keep passwords in Settings as secrets.</small>
+          <small style="margin: 0 0 8px">Defaults for this flow (app code, account, IDs). Mark passwords secret: the value is stored but never shown again, and the AI only sees the key.</small>
         </label>
-        <VarsEditor v-model="variables" />
+        <VarsEditor v-model="variables" allow-secret />
         <label class="field" style="margin-top: 16px">
           <span>Spec (flow.spec.ts)</span>
           <textarea v-model="spec" class="code" wrap="off" spellcheck="false" placeholder="import { test, expect, v } from './qa';"></textarea>
