@@ -41,6 +41,12 @@ Rules for flow.spec.ts:
    matter, not just "ok". A UI test may also call api inside qa.step (e.g. to create test data).
 8. Stay inside the scope. No destructive actions (deleting data, changing settings) unless the scope
    asks for them, and restore anything you change.
+9. A wall the scope does not mention (a 2FA / OTP code screen, a captcha, a locked or expired
+   account) is the environment, not your task. Use only what the scope and knowledge pack give you
+   for it. Never guess codes, scan or fuzz endpoints, try secrets in new places, or change an
+   account's security settings (enrolling an authenticator, resetting 2FA) to get past it. Stop,
+   leave a flow.spec.ts whose login step fails with a clear message naming the wall, and say so in
+   the summary.
 
 How to work:
 - For API scopes, explore with scratch specs that console.log(JSON.stringify(await res.json(), null, 2));
@@ -221,62 +227,73 @@ export async function generateSpec(opts: {
     },
   });
 
-  for await (const msg of stream) {
-    if (msg.type === 'assistant') {
-      const u = msg.message.usage;
-      if (u && msg.message.id) {
-        const next = { input: u.input_tokens ?? 0, output: u.output_tokens ?? 0, cacheRead: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0 };
-        const prev = counted.get(msg.message.id) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-        // Frames of one message report cumulative counts: add only the growth.
-        const model = msg.message.model || 'unknown';
-        const m = (usage.models[model] ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 });
-        for (const k of ['input', 'output', 'cacheRead', 'cacheWrite'] as const) {
-          const delta = Math.max(0, next[k] - prev[k]);
-          usage[k] += delta;
-          m[k] += delta;
+  // After a non-success result (max turns, budget) the SDK throws "Claude Code returned an error
+  // result". That result was handled below, so go on and verify the flow.spec.ts the agent left,
+  // as the log line promises, instead of failing the run with nothing tested.
+  let stoppedEarly = false;
+  try {
+    for await (const msg of stream) {
+      if (msg.type === 'assistant') {
+        const u = msg.message.usage;
+        if (u && msg.message.id) {
+          const next = { input: u.input_tokens ?? 0, output: u.output_tokens ?? 0, cacheRead: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0 };
+          const prev = counted.get(msg.message.id) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+          // Frames of one message report cumulative counts: add only the growth.
+          const model = msg.message.model || 'unknown';
+          const m = (usage.models[model] ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, costUsd: 0 });
+          for (const k of ['input', 'output', 'cacheRead', 'cacheWrite'] as const) {
+            const delta = Math.max(0, next[k] - prev[k]);
+            usage[k] += delta;
+            m[k] += delta;
+          }
+          counted.set(msg.message.id, { input: Math.max(prev.input, next.input), output: Math.max(prev.output, next.output), cacheRead: Math.max(prev.cacheRead, next.cacheRead), cacheWrite: Math.max(prev.cacheWrite, next.cacheWrite) });
+          opts.onUsage?.(withTotal(usage), costUsd);
         }
-        counted.set(msg.message.id, { input: Math.max(prev.input, next.input), output: Math.max(prev.output, next.output), cacheRead: Math.max(prev.cacheRead, next.cacheRead), cacheWrite: Math.max(prev.cacheWrite, next.cacheWrite) });
+        for (const block of msg.message.content) {
+          if (block.type === 'text' && block.text.trim()) {
+            opts.log(`🤖 ${block.text.trim()}`);
+            summary = block.text.trim();
+          } else if (block.type === 'tool_use') {
+            const input = block.input as Record<string, unknown>;
+            const detail = input.command ?? input.file_path ?? input.pattern ?? '';
+            opts.log(`→ ${block.name} ${clip(String(detail), 200)}`);
+          }
+        }
+      } else if (msg.type === 'user' && Array.isArray(msg.message.content)) {
+        for (const block of msg.message.content) {
+          if (typeof block === 'object' && block && 'type' in block && block.type === 'tool_result') {
+            const content = (block as { content?: unknown }).content;
+            const text = typeof content === 'string' ? content : Array.isArray(content) ? content.map((c) => (c as { text?: string }).text ?? '').join('\n') : '';
+            const tail = text.trim().split('\n').slice(-6).join('\n');
+            if (tail) opts.log(`  ${clip(tail, 600).replace(/\n/g, '\n  ')}`);
+          }
+        }
+      } else if (msg.type === 'result') {
+        costUsd = msg.total_cost_usd ?? null;
+        // modelUsage covers every model call (subagents, compaction): it is the exact figure.
+        if (msg.modelUsage && Object.keys(msg.modelUsage).length) {
+          const exact = emptyUsage();
+          for (const [model, mu] of Object.entries(msg.modelUsage)) {
+            const m = { input: mu.inputTokens ?? 0, output: mu.outputTokens ?? 0, cacheRead: mu.cacheReadInputTokens ?? 0, cacheWrite: mu.cacheCreationInputTokens ?? 0, costUsd: mu.costUSD ?? 0 };
+            exact.models[model] = m;
+            exact.input += m.input;
+            exact.output += m.output;
+            exact.cacheRead += m.cacheRead;
+            exact.cacheWrite += m.cacheWrite;
+          }
+          Object.assign(usage, withTotal(exact));
+        }
         opts.onUsage?.(withTotal(usage), costUsd);
-      }
-      for (const block of msg.message.content) {
-        if (block.type === 'text' && block.text.trim()) {
-          opts.log(`🤖 ${block.text.trim()}`);
-          summary = block.text.trim();
-        } else if (block.type === 'tool_use') {
-          const input = block.input as Record<string, unknown>;
-          const detail = input.command ?? input.file_path ?? input.pattern ?? '';
-          opts.log(`→ ${block.name} ${clip(String(detail), 200)}`);
+        opts.log(`🤖 Agent finished: ${msg.subtype}, ${msg.num_turns} turns, ${usage.total.toLocaleString('en-US')} tokens (in ${usage.input.toLocaleString('en-US')}, out ${usage.output.toLocaleString('en-US')}, cache read ${usage.cacheRead.toLocaleString('en-US')}, cache write ${usage.cacheWrite.toLocaleString('en-US')})${costUsd != null ? `, ~$${costUsd.toFixed(2)}` : ''}`);
+        if (msg.subtype === 'success' && msg.result) summary = msg.result;
+        if (msg.subtype !== 'success') {
+          stoppedEarly = true;
+          opts.log(`⚠ Agent stopped early (${msg.subtype}); verifying whatever flow.spec.ts it left.`);
         }
       }
-    } else if (msg.type === 'user' && Array.isArray(msg.message.content)) {
-      for (const block of msg.message.content) {
-        if (typeof block === 'object' && block && 'type' in block && block.type === 'tool_result') {
-          const content = (block as { content?: unknown }).content;
-          const text = typeof content === 'string' ? content : Array.isArray(content) ? content.map((c) => (c as { text?: string }).text ?? '').join('\n') : '';
-          const tail = text.trim().split('\n').slice(-6).join('\n');
-          if (tail) opts.log(`  ${clip(tail, 600).replace(/\n/g, '\n  ')}`);
-        }
-      }
-    } else if (msg.type === 'result') {
-      costUsd = msg.total_cost_usd ?? null;
-      // modelUsage covers every model call (subagents, compaction): it is the exact figure.
-      if (msg.modelUsage && Object.keys(msg.modelUsage).length) {
-        const exact = emptyUsage();
-        for (const [model, mu] of Object.entries(msg.modelUsage)) {
-          const m = { input: mu.inputTokens ?? 0, output: mu.outputTokens ?? 0, cacheRead: mu.cacheReadInputTokens ?? 0, cacheWrite: mu.cacheCreationInputTokens ?? 0, costUsd: mu.costUSD ?? 0 };
-          exact.models[model] = m;
-          exact.input += m.input;
-          exact.output += m.output;
-          exact.cacheRead += m.cacheRead;
-          exact.cacheWrite += m.cacheWrite;
-        }
-        Object.assign(usage, withTotal(exact));
-      }
-      opts.onUsage?.(withTotal(usage), costUsd);
-      opts.log(`🤖 Agent finished: ${msg.subtype}, ${msg.num_turns} turns, ${usage.total.toLocaleString('en-US')} tokens (in ${usage.input.toLocaleString('en-US')}, out ${usage.output.toLocaleString('en-US')}, cache read ${usage.cacheRead.toLocaleString('en-US')}, cache write ${usage.cacheWrite.toLocaleString('en-US')})${costUsd != null ? `, ~$${costUsd.toFixed(2)}` : ''}`);
-      if (msg.subtype === 'success' && msg.result) summary = msg.result;
-      if (msg.subtype !== 'success') opts.log(`⚠ Agent stopped early (${msg.subtype}); verifying whatever flow.spec.ts it left.`);
     }
+  } catch (e) {
+    if (!stoppedEarly || opts.abort.signal.aborted) throw e;
   }
   if (summary) writeFileSync(join(opts.dir, 'agent-summary.md'), summary);
   return { costUsd, tokens: withTotal(usage) };
