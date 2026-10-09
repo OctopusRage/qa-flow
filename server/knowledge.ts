@@ -1,4 +1,5 @@
-// Optional knowledge pack: per-module flow maps (flows/<module>.md) and UI component-ID maps
+// Optional knowledge pack: per-module flow maps (flows/<module>.md, or a flows/<module>/ folder of
+// an _index.md plus one page per UI menu) and UI component-ID maps
 // (ui-map/<module>.json), e.g. the knowledge/ folder of a team's QA repo. Read-only here: an AI
 // run gets a copy in its folder so the sandboxed agent can read it.
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -7,7 +8,8 @@ import { join, resolve } from 'node:path';
 
 export type KnowledgeModule = {
   name: string;
-  flow?: { file: string; description: string };
+  /** file is the map itself, or the module folder's _index.md; pages lists the folder's other pages. */
+  flow?: { file: string; description: string; pages?: string[] };
   uiMap?: { file: string; components: number; verified: number; app?: string; baseRoute?: string };
 };
 export type KnowledgeSummary = { dir: string; modules: KnowledgeModule[]; references: { file: string; description: string }[] };
@@ -41,6 +43,17 @@ export function summarizeKnowledge(dir: string): KnowledgeSummary {
     const description = frontmatterDescription(readFileSync(join(dir, 'flows', f), 'utf8'));
     mod(f.slice(0, -3)).flow = { file: `flows/${f}`, description };
   }
+  // A module folder: _index.md (frontmatter, overview, a Pages table) and one page per UI menu.
+  // Read the index first, then only the pages the scope needs, not the whole module.
+  const flowsDir = join(dir, 'flows');
+  const folders = existsSync(flowsDir)
+    ? readdirSync(flowsDir).filter((d) => !d.startsWith('_') && !d.startsWith('.') && existsSync(join(flowsDir, d, '_index.md'))).sort()
+    : [];
+  for (const d of folders) {
+    const description = frontmatterDescription(readFileSync(join(flowsDir, d, '_index.md'), 'utf8'));
+    const pages = files(join(flowsDir, d), '.md').filter((f) => f !== '_index.md').map((f) => f.slice(0, -3));
+    mod(d).flow = { file: `flows/${d}/_index.md`, description, pages };
+  }
   for (const f of files(join(dir, 'ui-map'), '.json')) {
     try {
       const map = JSON.parse(readFileSync(join(dir, 'ui-map', f), 'utf8'));
@@ -68,7 +81,8 @@ function indexMarkdown(s: KnowledgeSummary): string {
     const ui = m.uiMap
       ? `${m.uiMap.file} (${m.uiMap.components} ids, ${m.uiMap.verified} live-verified${m.uiMap.baseRoute ? `, ${m.uiMap.baseRoute}` : ''})`
       : '-';
-    return `| ${m.name} | ${m.flow ? `${m.flow.file}: ${m.flow.description || '(no description)'}` : '-'} | ${ui} |`;
+    const pages = m.flow?.pages?.length ? ` · pages: ${m.flow.pages.join(', ')}` : '';
+    return `| ${m.name} | ${m.flow ? `${m.flow.file}: ${m.flow.description || '(no description)'}${pages}` : '-'} | ${ui} |`;
   });
   const refs = s.references.map((r) => `- ${r.file}: ${r.description || '(no description)'}`);
   return [

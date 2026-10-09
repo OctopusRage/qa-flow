@@ -68,10 +68,12 @@ function describeVariables(vars: Variable[]): string {
 
 const KNOWLEDGE = `## Knowledge pack (read-only reference in knowledge/)
 The team's notes on this product, indexed below.
-- knowledge/flows/<module>.md: how a module behaves (roles, routes, endpoints, business rules, known
-  bugs). Before exploring, read the flow map of every module the scope touches (Grep it for the
-  feature's keywords if it is long) and use it to choose what to assert. When the live app
-  contradicts it, trust the app and mention the difference in your summary.
+- knowledge/flows/<module>/: how a module behaves (roles, routes, endpoints, business rules, known
+  bugs), one page per UI menu. Before exploring, read the _index.md of every module the scope touches;
+  its Pages table says which page covers what, so then read only those pages, not the whole folder.
+  (A module may instead be one file, flows/<module>.md: Grep it for the feature's keywords if it is
+  long.) Use it to choose what to assert. When the live app contradicts it, trust the app and mention
+  the difference in your summary.
 - knowledge/ui-map/<module>.json: "components" maps logical ids to selector chains ("sel", first match
   wins) plus "route" and notes. Grep it for the screen you need, and prefer those selectors over
   guessing: [data-testid="x"] is page.getByTestId('x'). Entries with "unverified": true come from
