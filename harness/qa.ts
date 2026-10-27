@@ -158,6 +158,9 @@ export const test = base.extend<{ qa: QA; api: Api; _stepLog: StepLog }>({
       let screenshot: string | null = join('screenshots', file);
       try {
         if (target.isClosed()) throw new Error('page closed');
+        // A step before any navigation (setup, or calls through `request`) would shoot a
+        // blank about:blank page: record it without a screenshot, like an api.step.
+        if (target.url() === 'about:blank') throw new Error('page not loaded');
         await target.screenshot({ path: join(RUN_DIR, screenshot), fullPage: opts?.fullPage ?? false, timeout: 15_000 });
         await testInfo.attach(`${String(log.index).padStart(2, '0')} ${title}`, { path: join(RUN_DIR, screenshot), contentType: 'image/png' });
       } catch {

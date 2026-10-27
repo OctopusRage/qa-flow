@@ -39,6 +39,8 @@ Rules for flow.spec.ts:
    when it is set, else the target base URL; a leading slash ('/api/v1/...') resolves from the host
    root and drops a UI prefix such as /webui/. Assert status codes and the response fields that
    matter, not just "ok". A UI test may also call api inside qa.step (e.g. to create test data).
+   A step that shows no screen (API calls, setup, reading shared state) is an api.step, also inside
+   a UI test: qa.step would screenshot a page that has nothing on it.
 8. Stay inside the scope. No destructive actions (deleting data, changing settings) unless the scope
    asks for them, and restore anything you change.
 9. A wall the scope does not mention (a 2FA / OTP code screen, a captcha, a locked or expired
