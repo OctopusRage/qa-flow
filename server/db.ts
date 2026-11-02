@@ -133,6 +133,8 @@ export type Settings = {
   baseUrls: string[];
   /** Optional knowledge pack (flows/*.md, ui-map/*.json) handed to the AI on generate runs. */
   knowledgeDir: string;
+  /** Optional test library: a QTM SQLite database, browsed read-only in the Library tab. */
+  libraryDb: string;
 };
 
 const DEFAULTS: Settings = {
@@ -151,6 +153,7 @@ const DEFAULTS: Settings = {
   variables: [],
   baseUrls: [],
   knowledgeDir: '',
+  libraryDb: '',
 };
 
 export function getSettings(): Settings {

@@ -122,6 +122,18 @@ prompt. The agent reads the matching flow maps before exploring and uses the sel
 inline, so `flow.spec.ts` stays self-contained and replays don't need the pack. The copy is removed
 when the run ends. The folder is read fresh on every run, so a `git pull` there updates it.
 
+## Test library
+
+Settings › Test library can point at a QTM database: the QA team's
+test-case manager (SQLite). The **Library** tab then shows its Module → Feature tree, full-text search
+over every case (title, steps, expected results), each case's steps, sources and last results in QTM, and
+the qa-flow runs that named it. It is read-only: cases are edited in QTM.
+
+Tick cases and **Run with AI**: *New run* opens with a scope built from them, one Playwright test per case,
+titled with its code (`QTC-INBOX-0325 — …`). `/library/<code>` links straight to a case. The file is
+re-opened on every request, so a copy replaced on disk (a synced snapshot) shows up without a restart;
+the search index lives in `data/library-search.db` and rebuilds when the file changes.
+
 ## Run history and AI usage
 
 **Runs** lists every run with filters kept in the URL: date presets (today, yesterday, last 7 / 30

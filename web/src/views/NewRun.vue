@@ -25,7 +25,23 @@ onMounted(async () => {
   [templates.value, settings.value] = await Promise.all([api<Template[]>('/templates'), api<Settings>('/settings')]);
   if (!baseUrl.value) baseUrl.value = template.value?.base_url || settings.value.baseUrls[0] || '';
   applyTemplate();
+  await applyLibrary();
 });
+
+/** `?qtm=CODE,CODE` from the Library: the scope is built server-side from those cases. */
+async function applyLibrary() {
+  const codes = typeof route.query.qtm === 'string' ? route.query.qtm : '';
+  if (!codes || templateId.value) return;
+  try {
+    const r = await api<{ name: string; instruction: string; missing: string[] }>(`/library/instruction?codes=${encodeURIComponent(codes)}`);
+    mode.value = 'generate';
+    name.value = r.name;
+    instruction.value = r.instruction;
+    if (r.missing.length) error.value = `Not in the library: ${r.missing.join(', ')}`;
+  } catch (e) {
+    error.value = errorText(e);
+  }
+}
 
 function applyTemplate() {
   const t = template.value;

@@ -32,6 +32,7 @@ async function save(extra: Record<string, unknown> = {}) {
         variables: s.value.variables,
         baseUrls: s.value.baseUrls,
         knowledgeDir: s.value.knowledgeDir,
+        libraryDb: s.value.libraryDb,
         slackToken: slackToken.value || undefined,
         anthropicApiKey: anthropicKey.value || undefined,
         ...extra,
@@ -135,6 +136,23 @@ const removeUrl = (u: string) => s.value && (s.value.baseUrls = s.value.baseUrls
         <p v-if="s.knowledge" class="small" style="margin: 0; color: var(--pass)">
           ✓ {{ s.knowledge.modules }} modules: {{ s.knowledge.flows }} flow maps, {{ s.knowledge.uiMaps }} UI maps
           ({{ s.knowledge.components }} ids, {{ s.knowledge.verified }} live-verified), {{ s.knowledge.references }} reference docs <span class="muted mono">{{ s.knowledge.dir }}</span>
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>Test library</h2>
+        <p class="muted small" style="margin-top: -6px">
+          Optional QTM database (the QA team's test-case manager, SQLite), browsed read-only in <RouterLink to="/library">Library</RouterLink>:
+          modules, features and their test cases, with search, and a run built from the cases you pick. QA edits cases in QTM, never here.
+        </p>
+        <label class="field">
+          <span>Database file</span>
+          <input v-model="s.libraryDb" type="text" placeholder="~/qtm-data/qtm.db" spellcheck="false" />
+          <small>QTM's <code>prisma/dev.db</code>, or a gunzipped <code>db/qtm.db.gz</code> snapshot. Re-read on every request, so a synced copy shows up on its own.</small>
+        </label>
+        <p v-if="s.library" class="small" style="margin: 0; color: var(--pass)">
+          ✓ {{ s.library.tcs }} test cases ({{ s.library.active }} active) in {{ s.library.modules }} modules, {{ s.library.features }} features
+          <span class="muted mono">{{ s.library.path }}</span>
         </p>
       </section>
 

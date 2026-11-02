@@ -3,6 +3,7 @@ import fastifyStatic from '@fastify/static';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { resolveKnowledgeDir, summarizeKnowledge } from './knowledge.ts';
+import { caseDetail, featureCases, libraryInstruction, libraryStatus, libraryTree, resolveLibraryDb, searchCases } from './library.ts';
 import {
   ROOT,
   RUNS_DIR,
@@ -101,10 +102,20 @@ function knowledgeStatus(dir: string) {
   };
 }
 
+function libraryOrNull(path: string) {
+  const db = resolveLibraryDb(path);
+  try {
+    return db ? libraryStatus(db) : null;
+  } catch {
+    return null;
+  }
+}
+
 function publicSettings(s: Settings) {
   return {
     ...s,
     knowledge: knowledgeStatus(s.knowledgeDir),
+    library: libraryOrNull(s.libraryDb),
     slackToken: '',
     slackTokenHint: hint(s.slackToken),
     anthropicApiKey: '',
@@ -131,6 +142,11 @@ app.put('/api/settings', async (req) => {
     if (dir && !resolveKnowledgeDir(dir)) throw new HttpError(400, `No flows/, ui-map/ or reference/ folder found in ${dir} (or its knowledge/ subfolder)`);
     patch.knowledgeDir = dir;
   }
+  if (body.libraryDb !== undefined) {
+    const path = body.libraryDb.trim();
+    if (path && !resolveLibraryDb(path)) throw new HttpError(400, `${path} is not a QTM database (no TestCase table)`);
+    patch.libraryDb = path;
+  }
   if (body.variables) {
     // Secrets come back blank from GET: blank means "keep the stored value".
     patch.variables = keepSecrets(body.variables, current.variables);
@@ -151,6 +167,29 @@ function templateStats(id: number) {
   const runs = listRuns(20, id);
   return { lastRun: runs[0] ?? null, runCount: runs.length };
 }
+
+// ---- test library (QTM, read-only) ---------------------------------------------
+
+const libraryDb = () => resolveLibraryDb(getSettings().libraryDb) ?? (() => { throw new HttpError(404, 'No test library configured (Settings › Test library)'); })();
+const qs = (req: { query: unknown }) => req.query as Record<string, string | undefined>;
+
+app.get('/api/library', async () => libraryOrNull(getSettings().libraryDb));
+app.get('/api/library/tree', async () => libraryTree(libraryDb()));
+app.get('/api/library/features/:id', async (req) => featureCases(libraryDb(), (req.params as { id: string }).id));
+app.get('/api/library/tc/:code', async (req) => {
+  const tc = caseDetail(libraryDb(), (req.params as { code: string }).code);
+  if (!tc) throw new HttpError(404, 'Test case not found');
+  return tc;
+});
+app.get('/api/library/search', async (req) => {
+  const { q = '', status, surface, module, limit } = qs(req);
+  return searchCases(libraryDb(), q, { status: status || undefined, surface: surface || undefined, module: module || undefined, limit: limit ? Number(limit) : undefined });
+});
+app.get('/api/library/instruction', async (req) => {
+  const codes = (qs(req).codes ?? '').split(',').map((c) => c.trim()).filter(Boolean).slice(0, 30);
+  if (!codes.length) throw new HttpError(400, 'codes is required');
+  return libraryInstruction(libraryDb(), codes);
+});
 
 app.get('/api/templates', async () => listTemplates().map((t) => ({ ...publicTemplate(t), ...templateStats(t.id) })));
 
