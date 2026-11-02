@@ -18,6 +18,7 @@ import {
 } from './db.ts';
 import { generateSpec } from './agent.ts';
 import { resolveKnowledgeDir, stageKnowledge, unstageKnowledge } from './knowledge.ts';
+import { saveLibrarySpecs } from './library.ts';
 import { MB, fmtBytes, sample } from './resources.ts';
 
 const PW_CLI = join(ROOT, 'node_modules', '@playwright', 'test', 'cli.js');
@@ -333,7 +334,13 @@ async function execute(runId: number, abort: AbortController) {
     summary: s,
     finished_at: now(),
     error: s.total === 0 ? result.error ?? 'No tests ran' : null,
-  });
+  });  // Library cases whose test passed keep this spec as a template (replay with no AI, download).
+  try {
+    const kept = saveLibrarySpecs(run, result, join(dir, 'flow.spec.ts'));
+    if (kept) log(runId, `📗 Test library: spec saved as template #${kept.templateId} for ${kept.codes.join(', ')}`);
+  } catch (e) {
+    log(runId, `⚠ Test library: could not save the spec (${e instanceof Error ? e.message : String(e)})`);
+  }
 }
 
 function playwright(runId: number, dir: string, env: NodeJS.ProcessEnv, abort: AbortController): Promise<number> {

@@ -134,6 +134,13 @@ titled with its code (`QTC-INBOX-0325 — …`). `/library/<code>` links straigh
 re-opened on every request, so a copy replaced on disk (a synced snapshot) shows up without a restart;
 the search index lives in `data/library-search.db` and rebuilds when the file changes.
 
+**Saved specs.** When an AI run's test for a library case passes (its code is in the test title and no
+failing test names it), the run's spec is saved as a template and becomes that case's saved spec: a
+**▶ spec** badge in the list, and *Saved spec* with **Replay** (no AI) in the case. One template per run
+holds the whole spec; the case's test title picks it out (`playwright test -g QTC-INBOX-0325`). A newer
+passing run moves the case to its own template, and a template no case points at any more is deleted.
+Replays never save. The links live in qa-flow's own database (`library_specs`), not in QTM.
+
 ## Run history and AI usage
 
 **Runs** lists every run with filters kept in the URL: date presets (today, yesterday, last 7 / 30

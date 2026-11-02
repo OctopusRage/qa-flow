@@ -104,6 +104,8 @@ export type LibraryTc = {
   feature: string;
   featureId: string;
   last: LibraryLast | null;
+  /** The latest passing qa-flow spec of the case, kept as a template. */
+  spec: { templateId: number; runId: number; testTitle: string; savedAt: string } | null;
 };
 export type LibraryTcDetail = LibraryTc & {
   precondition: string | null;

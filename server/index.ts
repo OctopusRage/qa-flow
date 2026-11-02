@@ -3,7 +3,7 @@ import fastifyStatic from '@fastify/static';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { resolveKnowledgeDir, summarizeKnowledge } from './knowledge.ts';
-import { caseDetail, featureCases, libraryInstruction, libraryStatus, libraryTree, resolveLibraryDb, searchCases } from './library.ts';
+import { caseDetail, featureCases, forgetTemplateSpecs, libraryInstruction, libraryStatus, libraryTree, resolveLibraryDb, searchCases } from './library.ts';
 import {
   ROOT,
   RUNS_DIR,
@@ -223,6 +223,7 @@ app.put('/api/templates/:id', async (req) => {
 
 app.delete('/api/templates/:id', async (req) => {
   deleteTemplate(idParam(req.params));
+  forgetTemplateSpecs(idParam(req.params));
   return { ok: true };
 });
 

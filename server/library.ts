@@ -1,15 +1,17 @@
 // Optional test library: a QTM database (the QA team's test-case manager, SQLite via Prisma) browsed
 // read-only as Module → Feature → test case, searched with FTS5, and turned into a generate-run
-// instruction. qa-flow never writes it: QA edits cases in QTM.
+// instruction. qa-flow never writes it: QA edits cases in QTM. What qa-flow adds lives in its own DB:
+// `library_specs`, each case's latest passing spec kept as a template (saveLibrarySpecs, after a run).
 //
 // The file is opened per request, never held: whoever syncs it (probe-coder on the test box) replaces
 // it by rename, and a held handle would keep reading the old inode. The search index lives in our own
 // data dir and is rebuilt when the file's size/mtime changes (a few thousand rows: well under a second).
 import { DatabaseSync } from 'node:sqlite';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { DATA_DIR, db as qaDb } from './db.ts';
+import { DATA_DIR, db as qaDb, deleteTemplate, getSettings, now, saveTemplate, type Run } from './db.ts';
+import type { RunResult } from './runner.ts';
 
 const expand = (p: string) => resolve(p.trim().replace(/^~(?=$|\/)/, homedir()));
 
@@ -87,13 +89,15 @@ export type LibraryTc = {
   feature: string;
   featureId: string;
   last: LastResult | null;
+  /** The latest passing qa-flow spec of this case, kept as a template (replays with no AI). */
+  spec: LibrarySpec | null;
 };
 
 const TC_COLS = `t.id, t.code, t.title, t.status, t.surface, t.priority, t.testType, t.automationStatus,
                  f.id AS featureId, f.name AS feature, m.name AS module`;
 const TC_FROM = `"TestCase" t JOIN "Feature" f ON f.id = t.featureId JOIN "Module" m ON m.id = f.moduleId`;
 
-function decorate(d: DatabaseSync, rows: (Omit<LibraryTc, 'roles' | 'last'> & { id: string })[]): LibraryTc[] {
+function decorate(d: DatabaseSync, rows: (Omit<LibraryTc, 'roles' | 'last' | 'spec'> & { id: string })[]): LibraryTc[] {
   if (!rows.length) return [];
   const ids = rows.map((r) => r.id);
   const marks = ids.map(() => '?').join(',');
@@ -108,7 +112,8 @@ function decorate(d: DatabaseSync, rows: (Omit<LibraryTc, 'roles' | 'last'> & { 
     )
     .all(...ids) as { testCaseId: string; status: string; at: string | null; run: string }[])
     if (!last.has(r.testCaseId)) last.set(r.testCaseId, { status: r.status, at: r.at, run: r.run });
-  return rows.map(({ id, ...r }) => ({ ...r, roles: roles.get(id) ?? [], last: last.get(id) ?? null }));
+  const specs = librarySpecs(rows.map((r) => r.code));
+  return rows.map(({ id, ...r }) => ({ ...r, roles: roles.get(id) ?? [], last: last.get(id) ?? null, spec: specs.get(r.code) ?? null }));
 }
 
 export function featureCases(path: string, featureId: string): LibraryTc[] {
@@ -266,4 +271,83 @@ export function libraryInstruction(path: string, codes: string[]): { name: strin
     ...blocks.flatMap((b) => [b, '']),
   ].join('\n');
   return { name: name.slice(0, 160), instruction, missing };
+}
+
+// ---- saved specs: library case → template ------------------------------------------------
+
+export type LibrarySpec = { templateId: number; runId: number; testTitle: string; savedAt: string };
+
+const CODE_RE = /\bQTC-[A-Z]+-\d+\b/g;
+/** The QTM codes a text names (a test title, a scope). */
+export const codesIn = (text: string) => [...new Set(text.match(CODE_RE) ?? [])];
+
+export function librarySpecs(codes: string[]): Map<string, LibrarySpec> {
+  const out = new Map<string, LibrarySpec>();
+  if (!codes.length) return out;
+  const rows = qaDb
+    .prepare(`SELECT code, template_id, run_id, test_title, saved_at FROM library_specs WHERE code IN (${codes.map(() => '?').join(',')})`)
+    .all(...codes) as { code: string; template_id: number; run_id: number; test_title: string; saved_at: string }[];
+  for (const r of rows) out.set(r.code, { templateId: r.template_id, runId: r.run_id, testTitle: r.test_title, savedAt: r.saved_at });
+  return out;
+}
+
+/**
+ * After a generate run: every library case whose test passed gets the run's spec as its current
+ * spec, saved as a template. A case counts when its code is in a passing test's title (the Library's
+ * scope titles each test with its code; probe-coder's drafts tag reused cases `[QTM <code>]`) and in
+ * no failing one, and when the code is a live case in the configured library. One template per run,
+ * holding the whole spec; `test_title` lets a replay or a download pick one case out of it
+ * (`playwright test -g <code>`). A template no case points at any more is deleted: these are
+ * managed here, not by hand. Replays never save (the spec did not change).
+ */
+export function saveLibrarySpecs(run: Run, result: RunResult, specFile: string): { templateId: number; codes: string[] } | null {
+  if (run.mode !== 'generate' || !existsSync(specFile)) return null;
+  const path = resolveLibraryDb(getSettings().libraryDb);
+  if (!path) return null;
+  const seen = new Map<string, { ok: boolean; title: string }>();
+  for (const t of result.tests)
+    for (const code of codesIn(t.title)) {
+      const prev = seen.get(code);
+      seen.set(code, { ok: (prev?.ok ?? true) && t.status === 'passed', title: prev?.title ?? t.title });
+    }
+  const candidates = [...seen].filter(([, v]) => v.ok).map(([c]) => c);
+  if (!candidates.length) return null;
+  const titles = withDb(path, (d) => {
+    const q = d.prepare(`SELECT t.title FROM "TestCase" t WHERE t.code = ? AND ${LIVE}`);
+    return new Map(candidates.flatMap((c) => {
+      const r = q.get(c) as { title: string } | undefined;
+      return r ? [[c, r.title] as const] : [];
+    }));
+  });
+  const codes = candidates.filter((c) => titles.has(c));
+  if (!codes.length) return null;
+
+  const name =
+    codes.length === 1
+      ? `${codes[0]} — ${titles.get(codes[0])}`
+      : `QTM: ${codes.length} cases (${codes.slice(0, 4).join(', ')}${codes.length > 4 ? ', …' : ''})`;
+  const saved = saveTemplate({
+    name: name.slice(0, 200),
+    description: `Saved by the test library from run #${run.id}: the latest passing spec of ${codes.join(', ')}. A newer passing run of a case moves it to that run's template.`,
+    instruction: run.instruction,
+    base_url: run.base_url,
+    spec: readFileSync(specFile, 'utf8'),
+    variables: run.variables,
+  });
+  const before = librarySpecs(codes);
+  const upsert = qaDb.prepare(
+    `INSERT INTO library_specs (code, template_id, run_id, test_title, saved_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(code) DO UPDATE SET template_id = excluded.template_id, run_id = excluded.run_id, test_title = excluded.test_title, saved_at = excluded.saved_at`,
+  );
+  const at = now();
+  for (const c of codes) upsert.run(c, saved.id, run.id, seen.get(c)!.title, at);
+  const still = qaDb.prepare('SELECT 1 FROM library_specs WHERE template_id = ? LIMIT 1');
+  for (const old of new Set([...before.values()].map((b) => b.templateId)))
+    if (old !== saved.id && !still.get(old)) deleteTemplate(old);
+  return { templateId: saved.id, codes };
+}
+
+/** A template deleted by hand drops its library links, so no case points at a missing spec. */
+export function forgetTemplateSpecs(templateId: number) {
+  qaDb.prepare('DELETE FROM library_specs WHERE template_id = ?').run(templateId);
 }

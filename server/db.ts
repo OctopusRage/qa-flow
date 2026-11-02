@@ -51,6 +51,20 @@ const runCols = (db.prepare('PRAGMA table_info(runs)').all() as { name: string }
 if (!runCols.includes('source')) db.exec("ALTER TABLE runs ADD COLUMN source TEXT NOT NULL DEFAULT 'ui'");
 if (!runCols.includes('tokens')) db.exec('ALTER TABLE runs ADD COLUMN tokens TEXT');
 
+// Test library (QTM) specs: the current passing spec of each library case, kept as an ordinary
+// template so it replays like any other. One row per QTM code; a newer passing run of the case
+// moves the row to its own template (server/library.ts saveLibrarySpecs).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS library_specs (
+    code TEXT PRIMARY KEY,
+    template_id INTEGER NOT NULL,
+    run_id INTEGER NOT NULL,
+    test_title TEXT NOT NULL,
+    saved_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS library_specs_template ON library_specs(template_id);
+`);
+
 export type TokenCounts = { input: number; output: number; cacheRead: number; cacheWrite: number };
 /** AI token usage of a run: totals plus a per-model split (models: model id → counts + cost). */
 export type TokenUsage = TokenCounts & { total: number; models: Record<string, TokenCounts & { costUsd: number }> };

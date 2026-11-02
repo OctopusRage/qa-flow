@@ -204,6 +204,7 @@ const short = (iso?: string | null) => (iso ? fmtTime(iso) : '');
                 <td class="pick" @click.stop><input type="checkbox" :checked="selected.has(t.code)" :aria-label="`Select ${t.code}`" @change="toggle(t)" /></td>
                 <td>
                   <span class="mono small code">{{ t.code }}</span> {{ t.title }}
+                  <span v-if="t.spec" class="chip spec" title="A passing spec is saved: replays with no AI">▶ spec</span>
                   <div class="faint small">
                     {{ t.surface }} · {{ t.testType }}<template v-if="t.roles.length"> · {{ t.roles.join(', ') }}</template>
                     <template v-if="query.trim()"> · {{ t.module }} › {{ t.feature }}</template>
@@ -257,6 +258,16 @@ const short = (iso?: string | null) => (iso ? fmtTime(iso) : '');
         </ol>
         <p v-if="detail.tags" class="small faint">Tags: {{ detail.tags }}</p>
 
+        <h3>Saved spec</h3>
+        <div v-if="!detail.spec" class="faint small">None yet. A run whose test for this case passes saves its spec here.</div>
+        <div v-else class="row spec-row">
+          <span class="small">
+            <RouterLink :to="`/templates/${detail.spec.templateId}`">Template #{{ detail.spec.templateId }}</RouterLink>
+            from <RouterLink :to="`/runs/${detail.spec.runId}`">run #{{ detail.spec.runId }}</RouterLink>
+            <span class="faint">· passed {{ fmtTime(detail.spec.savedAt) }} · test “{{ detail.spec.testTitle }}”</span>
+          </span>
+          <button class="btn" @click="router.push(`/runs/new?templateId=${detail.spec.templateId}`)">▶ Replay</button>
+        </div>
         <h3>QTM runs</h3>
         <div v-if="!detail.runs.length" class="faint small">Never run in QTM.</div>
         <ul v-else class="runs">
@@ -311,6 +322,8 @@ const short = (iso?: string | null) => (iso ? fmtTime(iso) : '');
 .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 .toolbar .q { flex: 1 1 260px; min-width: 0; }
 .toolbar select { width: auto; flex: 0 0 auto; }
+.chip.spec { margin-left: 6px; background: var(--pass-soft); color: var(--pass); }
+.spec-row { justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .chip { display: inline-flex; padding: 2px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; background: var(--surface-2); color: var(--muted); }
 .heading { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 th.pick, td.pick { width: 28px; padding-right: 0; }
