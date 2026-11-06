@@ -3,7 +3,7 @@ import fastifyStatic from '@fastify/static';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { resolveKnowledgeDir, summarizeKnowledge } from './knowledge.ts';
-import { caseDetail, featureCases, forgetTemplateSpecs, libraryInstruction, libraryStatus, libraryTree, resolveLibraryDb, searchCases } from './library.ts';
+import { caseDetail, featureCases, forgetTemplateSpecs, libraryInstruction, librarySpecLinks, restoreSpecs, libraryStatus, libraryTree, resolveLibraryDb, searchCases } from './library.ts';
 import {
   ROOT,
   RUNS_DIR,
@@ -174,6 +174,12 @@ const libraryDb = () => resolveLibraryDb(getSettings().libraryDb) ?? (() => { th
 const qs = (req: { query: unknown }) => req.query as Record<string, string | undefined>;
 
 app.get('/api/library', async () => libraryOrNull(getSettings().libraryDb));
+app.get('/api/library/specs', async () => librarySpecLinks());
+app.post('/api/library/restore', async () => {
+  const dir = resolveKnowledgeDir(getSettings().knowledgeDir);
+  if (!dir) throw new HttpError(400, 'No knowledge pack configured (Settings › Knowledge pack)');
+  return restoreSpecs(dir);
+});
 app.get('/api/library/tree', async () => libraryTree(libraryDb()));
 app.get('/api/library/features/:id', async (req) => featureCases(libraryDb(), (req.params as { id: string }).id));
 app.get('/api/library/tc/:code', async (req) => {

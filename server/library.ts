@@ -7,10 +7,10 @@
 // it by rename, and a held handle would keep reading the old inode. The search index lives in our own
 // data dir and is rebuilt when the file's size/mtime changes (a few thousand rows: well under a second).
 import { DatabaseSync } from 'node:sqlite';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { DATA_DIR, db as qaDb, deleteTemplate, getSettings, now, saveTemplate, type Run } from './db.ts';
+import { DATA_DIR, db as qaDb, deleteTemplate, getSettings, listTemplates, now, saveTemplate, type Run } from './db.ts';
 import type { RunResult } from './runner.ts';
 
 const expand = (p: string) => resolve(p.trim().replace(/^~(?=$|\/)/, homedir()));
@@ -350,4 +350,47 @@ export function saveLibrarySpecs(run: Run, result: RunResult, specFile: string):
 /** A template deleted by hand drops its library links, so no case points at a missing spec. */
 export function forgetTemplateSpecs(templateId: number) {
   qaDb.prepare('DELETE FROM library_specs WHERE template_id = ?').run(templateId);
+}
+
+/** Which template holds each case's saved spec: probe-coder mirrors this to git (its design-log/062). */
+export function librarySpecLinks() {
+  return qaDb.prepare('SELECT code, template_id, test_title FROM library_specs ORDER BY code').all() as { code: string; template_id: number; test_title: string }[];
+}
+
+/**
+ * Rebuild templates and spec links from a pack's specs/ folder after losing this data dir. Skips a
+ * template whose name already exists, so running it twice is safe. Secret values are not in git:
+ * a restored variable comes back empty, and the base URL is set at replay.
+ */
+export function restoreSpecs(dir: string): { restored: number; skipped: number } {
+  const folder = join(dir, 'specs');
+  const out = { restored: 0, skipped: 0 };
+  if (!existsSync(folder)) return out;
+  const names = new Set(listTemplates().map((t) => t.name));
+  const link = qaDb.prepare('INSERT OR IGNORE INTO library_specs (code, template_id, run_id, test_title, saved_at) VALUES (?, ?, 0, ?, ?)');
+  for (const file of readdirSync(folder).filter((f) => f.endsWith('.json')).sort()) {
+    const side = JSON.parse(readFileSync(join(folder, file), 'utf8')) as {
+      name: string;
+      description?: string;
+      instruction?: string;
+      variables?: { key: string; secret?: boolean }[];
+      codes?: { code: string; testTitle: string }[];
+    };
+    if (names.has(side.name)) {
+      out.skipped++;
+      continue;
+    }
+    const specPath = join(folder, file.replace(/\.json$/, '.spec.ts'));
+    const t = saveTemplate({
+      name: side.name,
+      description: side.description ?? '',
+      instruction: side.instruction ?? '',
+      spec: existsSync(specPath) ? readFileSync(specPath, 'utf8') : '',
+      variables: (side.variables ?? []).map((v) => ({ key: v.key, value: '', secret: v.secret })),
+    });
+    for (const c of side.codes ?? []) link.run(c.code, t.id, c.testTitle, now());
+    names.add(side.name);
+    out.restored++;
+  }
+  return out;
 }
