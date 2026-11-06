@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// The test library (QTM, read-only): Module → Feature tree on the left, that feature's cases (or a
+// The test library (the pack's cases/, read-only): Module → Feature tree on the left, that feature's cases (or a
 // search's) on the right, a case's steps and history in a modal. Picked cases become a generate run.
 // Navigation inside the page uses history.replaceState, not the router: the shell keys RouterView by
 // fullPath, so a router push would remount the page and drop the selection.
@@ -132,14 +132,14 @@ const short = (iso?: string | null) => (iso ? fmtTime(iso) : '');
       <div>
         <h1>Test library</h1>
         <p>
-          The QA team's test cases from QTM, by module and feature. Search before you write a new one; pick cases and run them with AI.
+          The QA team's test cases, by module and feature. Search before you write a new one; pick cases and run them with AI.
           <span v-if="status" class="faint small">{{ status.tcs }} cases · {{ status.active }} active · synced {{ fmtTime(status.updatedAt) }}</span>
         </p>
       </div>
     </div>
 
     <div v-if="status === null" class="card empty">
-      No test library yet. Point <RouterLink to="/settings">Settings › Test library</RouterLink> at a QTM database file.
+      No test library yet. Point <RouterLink to="/settings">Settings › Knowledge pack</RouterLink> at a pack with a <code>cases/</code> folder.
     </div>
     <div v-else-if="error && !tree.length" class="error-box">{{ error }}</div>
 
@@ -268,14 +268,12 @@ const short = (iso?: string | null) => (iso ? fmtTime(iso) : '');
           </span>
           <button class="btn" @click="router.push(`/runs/new?templateId=${detail.spec.templateId}`)">▶ Replay</button>
         </div>
-        <h3>QTM runs</h3>
-        <div v-if="!detail.runs.length" class="faint small">Never run in QTM.</div>
-        <ul v-else class="runs">
-          <li v-for="(r, i) in detail.runs" :key="i">
-            <span class="badge" :class="resultClass(r.status)">{{ r.status }}</span>
-            <span class="small">{{ r.run }}</span> <span class="faint small">{{ r.env }} · {{ short(r.at) }}</span>
-          </li>
-        </ul>
+        <h3>Last result</h3>
+        <div v-if="!detail.last" class="faint small">Never run.</div>
+        <div v-else class="row">
+          <span class="badge" :class="resultClass(detail.last.status)">{{ detail.last.status }}</span>
+          <span class="faint small">{{ detail.last.run }} · {{ detail.last.at }}</span>
+        </div>
         <h3>qa-flow runs</h3>
         <div v-if="!detail.qaFlowRuns.length" class="faint small">None yet.</div>
         <ul v-else class="runs">

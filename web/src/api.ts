@@ -82,11 +82,10 @@ export type Settings = {
   baseUrls: string[];
   knowledgeDir: string;
   knowledge: { dir: string; modules: number; flows: number; uiMaps: number; components: number; verified: number; references: number } | null;
-  libraryDb: string;
   library: LibraryStatus | null;
 };
 
-// ---- test library (QTM, read-only) ----
+// ---- test library (the pack's cases/, read-only) ----
 export type LibraryStatus = { path: string; modules: number; features: number; tcs: number; active: number; updatedAt: string };
 export type LibraryFeature = { id: string; name: string; flowRef: string | null; tcs: number; active: number };
 export type LibraryModule = { id: string; key: string; name: string; tcs: number; active: number; features: LibraryFeature[] };
@@ -98,7 +97,6 @@ export type LibraryTc = {
   surface: string;
   priority: string;
   testType: string;
-  automationStatus: string;
   roles: string[];
   module: string;
   feature: string;
@@ -109,14 +107,12 @@ export type LibraryTc = {
 };
 export type LibraryTcDetail = LibraryTc & {
   precondition: string | null;
-  steps: { action: string; expected: string; kind: string }[];
+  steps: { action: string; expected: string }[];
   platforms: string[];
   tags: string;
   flowRef: string | null;
   version: number;
-  updatedAt: string;
   sources: { kind: string; ref: string }[];
-  runs: { status: string; at: string | null; run: string; env: string; notes: string | null }[];
   qaFlowRuns: { id: number; name: string; status: string; created_at: string }[];
 };
 

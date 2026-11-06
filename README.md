@@ -124,22 +124,23 @@ when the run ends. The folder is read fresh on every run, so a `git pull` there 
 
 ## Test library
 
-Settings › Test library can point at a QTM database: the QA team's
-test-case manager (SQLite). The **Library** tab then shows its Module → Feature tree, full-text search
-over every case (title, steps, expected results), each case's steps, sources and last results in QTM, and
-the qa-flow runs that named it. It is read-only: cases are edited in QTM.
+The library is the knowledge pack's `cases/` folder, one Markdown file per case
+(`cases/<module>/<feature>/<code>.md`), so git is the master copy and there is nothing else to configure.
+The **Library** tab shows its Module → Feature tree, full-text search over every case (title, steps,
+expected results), each case's steps, sources and last result, and the qa-flow runs that named it. It is
+read-only: cases are edited in the pack.
 
 Tick cases and **Run with AI**: *New run* opens with a scope built from them, one Playwright test per case,
-titled with its code (`QTC-INBOX-0325 — …`). `/library/<code>` links straight to a case. The file is
-re-opened on every request, so a copy replaced on disk (a synced snapshot) shows up without a restart;
-the search index lives in `data/library-search.db` and rebuilds when the file changes.
+titled with its code (`QTC-INBOX-0325 — …`). `/library/<code>` links straight to a case. A `git pull` in the
+pack shows up without a restart: the index lives in `data/library-index.db` and rebuilds when the files
+change, and it can be deleted at any time.
 
 **Saved specs.** When an AI run's test for a library case passes (its code is in the test title and no
 failing test names it), the run's spec is saved as a template and becomes that case's saved spec: a
 **▶ spec** badge in the list, and *Saved spec* with **Replay** (no AI) in the case. One template per run
 holds the whole spec; the case's test title picks it out (`playwright test -g QTC-INBOX-0325`). A newer
 passing run moves the case to its own template, and a template no case points at any more is deleted.
-Replays never save. The links live in qa-flow's own database (`library_specs`), not in QTM.
+Replays never save. The links live in qa-flow's own database (`library_specs`), and probe-coder mirrors them to the pack's `specs/`.
 
 ## Run history and AI usage
 

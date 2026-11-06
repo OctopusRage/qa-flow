@@ -51,7 +51,7 @@ const runCols = (db.prepare('PRAGMA table_info(runs)').all() as { name: string }
 if (!runCols.includes('source')) db.exec("ALTER TABLE runs ADD COLUMN source TEXT NOT NULL DEFAULT 'ui'");
 if (!runCols.includes('tokens')) db.exec('ALTER TABLE runs ADD COLUMN tokens TEXT');
 
-// Test library (QTM) specs: the current passing spec of each library case, kept as an ordinary
+// Test library specs: the current passing spec of each library case, kept as an ordinary
 // template so it replays like any other. One row per QTM code; a newer passing run of the case
 // moves the row to its own template (server/library.ts saveLibrarySpecs).
 db.exec(`
@@ -147,8 +147,6 @@ export type Settings = {
   baseUrls: string[];
   /** Optional knowledge pack (flows/*.md, ui-map/*.json) handed to the AI on generate runs. */
   knowledgeDir: string;
-  /** Optional test library: a QTM SQLite database, browsed read-only in the Library tab. */
-  libraryDb: string;
 };
 
 const DEFAULTS: Settings = {
@@ -167,7 +165,6 @@ const DEFAULTS: Settings = {
   variables: [],
   baseUrls: [],
   knowledgeDir: '',
-  libraryDb: '',
 };
 
 export function getSettings(): Settings {
