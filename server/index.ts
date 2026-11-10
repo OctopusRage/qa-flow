@@ -27,6 +27,7 @@ import {
   type Settings,
   type Template,
   type Variable,
+  type LibraryRef,
 } from './db.ts';
 import { cancel, enqueue, events, isActive, queueState, readResult, runDir, schedulerState, type RunEvent, type RunResult } from './runner.ts';
 import { authTest, postReport, resolveTarget } from './slack.ts';
@@ -262,6 +263,14 @@ app.get('/api/runs/search', async (req) => {
   return { ...found, items: found.items.map(publicRun) };
 });
 
+/** Well-formed library refs only (design-log/066 in probe-coder); the runner drops codes with no saved spec. */
+function libraryRefs(v: unknown): LibraryRef[] {
+  if (!Array.isArray(v)) return [];
+  return v
+    .filter((r): r is LibraryRef => !!r && /^QTC-[A-Z]+-\d+$/.test(String(r.code)) && Number.isInteger(r.tc) && r.tc > 0)
+    .map((r) => ({ code: String(r.code), tc: r.tc, title: String(r.title ?? '').slice(0, 300) }));
+}
+
 app.post('/api/runs', async (req) => {
   const b = req.body as {
     mode?: 'generate' | 'replay';
@@ -270,6 +279,7 @@ app.post('/api/runs', async (req) => {
     baseUrl?: string;
     instruction?: string;
     variables?: Variable[];
+    library?: LibraryRef[];
   };
   const template = b.templateId ? getTemplate(b.templateId) : undefined;
   if (b.templateId && !template) throw new HttpError(404, 'Template not found');
@@ -287,6 +297,7 @@ app.post('/api/runs', async (req) => {
     instruction,
     variables: (b.variables ?? []).filter((v) => v.key?.trim()),
     source: sourceOf(req),
+    library: libraryRefs(b.library),
   });
   rememberBaseUrl(baseUrl);
   enqueue(run.id);

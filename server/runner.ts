@@ -15,10 +15,11 @@ import {
   type RunSummary,
   type TokenUsage,
   type Variable,
+  type LibraryRef,
 } from './db.ts';
 import { generateSpec } from './agent.ts';
 import { resolveKnowledgeDir, stageKnowledge, unstageKnowledge } from './knowledge.ts';
-import { saveLibrarySpecs } from './library.ts';
+import { librarySpecs, saveLibrarySpecs } from './library.ts';
 import { MB, fmtBytes, sample } from './resources.ts';
 
 const PW_CLI = join(ROOT, 'node_modules', '@playwright', 'test', 'cli.js');
@@ -266,6 +267,11 @@ async function execute(runId: number, abort: AbortController) {
   const env = playwrightEnv(run, dir);
   updateRun(runId, { started_at: now(), error: null });
 
+  // Phase 1 of a mixed run (probe-coder design-log/066): library cases replay their saved spec, no AI.
+  const lib = await libraryPhase(run, dir, env, abort);
+  if (abort.signal.aborted) throw new Error('Canceled');
+  if (lib.onlyLibrary) return finishRun(runId, run, dir, lib, null, 0);
+
   if (run.mode === 'generate') {
     setStatus(runId, 'generating');
     const template = run.template_id ? getTemplate(run.template_id) : undefined;
@@ -289,7 +295,7 @@ async function execute(runId: number, abort: AbortController) {
     };
     try {
       const { costUsd, tokens } = await generateSpec({
-        run,
+        run: lib.note ? { ...run, instruction: `${run.instruction}\n\n${lib.note}` } : run,
         dir,
         env,
         variables: mergedVariables(run),
@@ -318,8 +324,24 @@ async function execute(runId: number, abort: AbortController) {
   resetResults(dir);
   const code = await playwright(runId, dir, env, abort);
   if (abort.signal.aborted) throw new Error('Canceled');
+  finishRun(runId, run, dir, lib, collectResults(dir), code);
+}
 
-  const result = collectResults(dir);
+/** Merge the library phase's results with flow.spec.ts's, set the run's status, save library specs. */
+function finishRun(runId: number, run: Run, dir: string, lib: LibraryPhase, flow: RunResult | null, code: number) {
+  const tests = [...lib.tests, ...(flow?.tests ?? [])];
+  const summary: RunSummary = { total: 0, passed: 0, failed: 0, skipped: 0, flaky: 0, durationMs: lib.durationMs + (flow?.summary.durationMs ?? 0) };
+  for (const t of tests) {
+    summary.total += 1;
+    if (t.status === 'passed') summary.passed += 1;
+    else if (t.status === 'skipped') summary.skipped += 1;
+    else if (t.status === 'flaky') {
+      summary.flaky += 1;
+      summary.passed += 1;
+    } else summary.failed += 1;
+  }
+  const error = [lib.error, flow?.error].filter(Boolean).join('\n') || undefined;
+  const result: RunResult = { summary, tests, ...(error ? { error } : {}) };
   writeFileSync(join(dir, 'result.json'), JSON.stringify(result, null, 2));
   const s = result.summary;
   const passed = code === 0 && s.failed === 0 && s.total > 0;
@@ -343,9 +365,9 @@ async function execute(runId: number, abort: AbortController) {
   }
 }
 
-function playwright(runId: number, dir: string, env: NodeJS.ProcessEnv, abort: AbortController): Promise<number> {
+function playwright(runId: number, dir: string, env: NodeJS.ProcessEnv, abort: AbortController, args: string[] = ['flow.spec.ts']): Promise<number> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [PW_CLI, 'test', 'flow.spec.ts', '-c', 'playwright.config.ts'], { cwd: dir, env });
+    const child = spawn(process.execPath, [PW_CLI, 'test', ...args, '-c', 'playwright.config.ts'], { cwd: dir, env });
     const entry = active.get(runId);
     if (entry) entry.child = child;
     let buf = '';
@@ -364,6 +386,107 @@ function playwright(runId: number, dir: string, env: NodeJS.ProcessEnv, abort: A
       resolve(code ?? 1);
     });
   });
+}
+
+// ---- library phase (probe-coder design-log/066) ------------------------------------
+//
+// A run may name library cases (`run.library`: code + its TC number and title in this
+// run's test case). Each one with a saved spec runs first from that spec, filtered to
+// its test with -g, no AI. Its result is renamed to this test case's TC number. One
+// that fails only on finding elements is stale (the page changed): in a generate run
+// the AI writes it with the new TCs instead, and a passing rewrite is saved over it.
+// A real failure stays: library cases are regression TCs, so it is a regression signal.
+
+export type LibraryPhase = {
+  tests: TestResult[];
+  durationMs: number;
+  error?: string;
+  /** Appended to the generating agent's test scope: what it must not write, and what it must. */
+  note: string;
+  /** Every TC came from the library and none needs the AI: no flow.spec.ts at all. */
+  onlyLibrary: boolean;
+};
+
+const LIB_DIR = 'lib';
+const STALE = /TimeoutError: locator\.|element\(s\) not found|waiting for (?:locator|getBy)/;
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** TC numbers the test case defines (`TC3 [..] …`, `### TC3 …`). */
+function tcNumbers(instruction: string): Set<number> {
+  return new Set([...instruction.matchAll(/^[\s*#>-]*TC(\d+)\b/gm)].map((m) => Number(m[1])));
+}
+
+async function libraryPhase(run: Run, dir: string, env: NodeJS.ProcessEnv, abort: AbortController): Promise<LibraryPhase> {
+  const none: LibraryPhase = { tests: [], durationMs: 0, note: '', onlyLibrary: false };
+  if (!run.library?.length) return none;
+  rmSync(join(dir, LIB_DIR), { recursive: true, force: true });
+  const saved = librarySpecs(run.library.map((r) => r.code));
+  // A replayed flow.spec.ts that already has the case (the AI wrote it in the run being
+  // replayed) runs it there; replaying the library copy too would run it twice.
+  const replayed = run.mode === 'replay' && run.template_id ? getTemplate(run.template_id)?.spec ?? '' : '';
+  const refs = run.library.filter((r) => saved.has(r.code) && !replayed.includes(r.code));
+  const missing = run.library.filter((r) => !saved.has(r.code)).map((r) => r.code);
+  if (missing.length) log(run.id, `📗 Library: no saved spec for ${missing.join(', ')} — written with the rest`);
+  if (!refs.length) return none;
+
+  mkdirSync(join(dir, LIB_DIR), { recursive: true });
+  const byTemplate = new Map<number, LibraryRef[]>();
+  for (const r of refs) byTemplate.set(saved.get(r.code)!.templateId, [...(byTemplate.get(saved.get(r.code)!.templateId) ?? []), r]);
+
+  const out: LibraryPhase = { ...none };
+  const stale: LibraryRef[] = [];
+  const errors: string[] = [];
+  for (const [templateId, group] of byTemplate) {
+    const spec = getTemplate(templateId)?.spec;
+    if (!spec) {
+      log(run.id, `⚠ Library: template #${templateId} has no spec — ${group.map((r) => r.code).join(', ')} written with the rest`);
+      stale.push(...group);
+      continue;
+    }
+    const file = `lib-${templateId}.lib.spec.ts`;
+    writeFileSync(join(dir, file), spec);
+    const results = `results-${templateId}.json`;
+    log(run.id, `— 📗 Library: TC${group.map((r) => r.tc).join(', TC')} from the saved spec of ${group.map((r) => r.code).join(', ')} (template #${templateId}), no AI —`);
+    setStatus(run.id, 'running');
+    await playwright(run.id, dir, {
+      ...env,
+      QA_LIB_PHASE: '1',
+      QA_RUN_DIR: join(dir, LIB_DIR),
+      QA_RESULTS_FILE: join(LIB_DIR, results),
+      QA_OUTPUT_DIR: join(LIB_DIR, `test-output-${templateId}`),
+      QA_REPORT_DIR: join(LIB_DIR, `report-${templateId}`),
+    }, abort, [file, '-g', group.map((r) => escapeRe(r.code)).join('|')]);
+    if (abort.signal.aborted) return out;
+    const res = collectResults(dir, { dir: LIB_DIR, results });
+    if (res.error) errors.push(res.error);
+    out.durationMs += res.summary.durationMs;
+    for (const r of group) {
+      const mine = res.tests.filter((t) => t.title.includes(r.code));
+      const bad = mine.filter((t) => t.status === 'failed' || t.status === 'timedOut');
+      if (!mine.length || (bad.length && bad.every((t) => !/\bBLOCKED\b/.test(t.error ?? '') && STALE.test(t.error ?? '')))) {
+        log(run.id, `📗 Library: TC${r.tc} ${r.code} — ${mine.length ? 'the saved script no longer matches the page' : 'no test of it in the saved spec'}${run.mode === 'generate' ? '; the AI writes it' : ''}`);
+        if (run.mode === 'generate') {
+          stale.push(r);
+          continue;
+        }
+      }
+      for (const t of mine) out.tests.push({ ...t, title: `TC${r.tc} [QTM ${r.code}] — ${r.title || t.title} (saved spec)` });
+    }
+  }
+  if (errors.length) out.error = errors.join('\n');
+
+  const kept = refs.filter((r) => !stale.includes(r));
+  const others = [...tcNumbers(run.instruction)].filter((n) => !kept.some((r) => r.tc === n));
+  out.onlyLibrary = run.mode === 'generate' && kept.length > 0 && others.length === 0;
+  if (run.mode === 'generate' && kept.length)
+    out.note = [
+      '## Already tested from the test library — do not write these',
+      `${kept.map((r) => `TC${r.tc} (${r.code})`).join(', ')} ran from the library's saved Playwright script in this run, before you started. Leave them out of flow.spec.ts.`,
+      ...(stale.length
+        ? [`${stale.map((r) => `TC${r.tc} (${r.code})`).join(', ')}: the saved script no longer matches the page. Write these, and keep the code in each test title (\`TC${stale[0].tc} [QTM ${stale[0].code}] …\`).`]
+        : []),
+    ].join('\n');
+  return out;
 }
 
 // ---- results ----------------------------------------------------------------
@@ -415,13 +538,21 @@ type PwSuite = { title: string; specs?: PwSpec[]; suites?: PwSuite[] };
 
 const strip = (s: string) => s.replace(/\u001b\[[0-9;]*m/g, '');
 
-export function collectResults(dir: string): RunResult {
-  const stepsFile = join(dir, 'steps.jsonl');
+/**
+ * `sub` reads a library-phase pass (design-log/066): its harness wrote steps and
+ * screenshots under `<dir>/<sub>` and Playwright wrote `<sub>/<results>`.
+ */
+export function collectResults(dir: string, sub?: { dir: string; results: string }): RunResult {
+  const stepsFile = join(dir, sub ? sub.dir : '', 'steps.jsonl');
   const steps: StepRecord[] = existsSync(stepsFile)
-    ? readFileSync(stepsFile, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    ? readFileSync(stepsFile, 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l) as StepRecord)
+        .map((st) => (sub && st.screenshot ? { ...st, screenshot: join(sub.dir, st.screenshot) } : st))
     : [];
   const summary: RunSummary = { total: 0, passed: 0, failed: 0, skipped: 0, flaky: 0, durationMs: 0 };
-  const resultsFile = join(dir, 'results.json');
+  const resultsFile = join(dir, sub ? join(sub.dir, sub.results) : 'results.json');
   if (!existsSync(resultsFile)) return { summary, tests: [], error: 'Playwright produced no results (see the log)' };
 
   const json = JSON.parse(readFileSync(resultsFile, 'utf8')) as {

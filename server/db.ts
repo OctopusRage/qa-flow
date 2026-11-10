@@ -50,6 +50,7 @@ db.exec(`
 const runCols = (db.prepare('PRAGMA table_info(runs)').all() as { name: string }[]).map((c) => c.name);
 if (!runCols.includes('source')) db.exec("ALTER TABLE runs ADD COLUMN source TEXT NOT NULL DEFAULT 'ui'");
 if (!runCols.includes('tokens')) db.exec('ALTER TABLE runs ADD COLUMN tokens TEXT');
+if (!runCols.includes('library')) db.exec("ALTER TABLE runs ADD COLUMN library TEXT NOT NULL DEFAULT '[]'");
 
 // Test library specs: the current passing spec of each library case, kept as an ordinary
 // template so it replays like any other. One row per QTM code; a newer passing run of the case
@@ -102,10 +103,15 @@ export type Run = {
   slack: { channel: string; ts: string; permalink?: string; at: string }[];
   source: 'ui' | 'mcp';
   tokens: TokenUsage | null;
+  /** Library cases to replay from their saved spec before the rest runs (probe-coder design-log/066). */
+  library: LibraryRef[];
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
 };
+
+/** A library case in this run's test case: its code, its TC number there, and its title there. */
+export type LibraryRef = { code: string; tc: number; title: string };
 
 export const now = () => new Date().toISOString();
 
@@ -121,6 +127,7 @@ function toRun(r: Row): Run {
     variables: JSON.parse(String(r.variables)),
     summary: r.summary ? JSON.parse(String(r.summary)) : null,
     tokens: r.tokens ? JSON.parse(String(r.tokens)) : null,
+    library: r.library ? JSON.parse(String(r.library)) : [],
     slack: JSON.parse(String(r.slack)),
   };
 }
@@ -308,12 +315,12 @@ export function getRun(id: number): Run | undefined {
   return r && toRun(r);
 }
 
-export function createRun(r: Pick<Run, 'template_id' | 'name' | 'mode' | 'base_url' | 'instruction' | 'variables' | 'source'>): Run {
+export function createRun(r: Pick<Run, 'template_id' | 'name' | 'mode' | 'base_url' | 'instruction' | 'variables' | 'source'> & { library?: LibraryRef[] }): Run {
   const res = db
     .prepare(
-      "INSERT INTO runs (template_id, name, mode, base_url, instruction, variables, source, status, created_at) VALUES (?,?,?,?,?,?,?,'queued',?)",
+      "INSERT INTO runs (template_id, name, mode, base_url, instruction, variables, source, library, status, created_at) VALUES (?,?,?,?,?,?,?,?,'queued',?)",
     )
-    .run(r.template_id, r.name, r.mode, r.base_url, r.instruction, JSON.stringify(r.variables), r.source, now());
+    .run(r.template_id, r.name, r.mode, r.base_url, r.instruction, JSON.stringify(r.variables), r.source, JSON.stringify(r.library ?? []), now());
   return getRun(Number(res.lastInsertRowid))!;
 }
 

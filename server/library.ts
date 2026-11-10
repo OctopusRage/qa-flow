@@ -379,7 +379,8 @@ export function saveLibrarySpecs(run: Run, result: RunResult, specFile: string):
   const lib = library();
   if (!lib) return null;
   const seen = new Map<string, { ok: boolean; title: string }>();
-  for (const t of result.tests)
+  // A test replayed from a library spec in this run (design-log/066) is not in flow.spec.ts.
+  for (const t of result.tests.filter((x) => !x.file.endsWith('.lib.spec.ts')))
     for (const code of codesIn(t.title)) {
       const prev = seen.get(code);
       seen.set(code, { ok: (prev?.ok ?? true) && t.status === 'passed', title: prev?.title ?? t.title });
