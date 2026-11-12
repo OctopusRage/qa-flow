@@ -420,6 +420,58 @@ export function saveLibrarySpecs(run: Run, result: RunResult, specFile: string):
   return { templateId: saved.id, codes };
 }
 
+/**
+ * A QA approved keeping this run's spec for these cases (probe-coder design-log/074): the explicit
+ * twin of saveLibrarySpecs, for runs started with saveLibrary: false. The code need not be in the
+ * library index yet (a new case is committed to the pack around the same time).
+ *
+ * A replay picks a case's test out of the spec with `-g <code>`, so each linked test's title must
+ * carry its code. A new case's test is still titled "TC4 — …": the code is written into the title
+ * in the saved copy ("TC4 [LIB QTC-…] — …"). The run's own flow.spec.ts is not touched. A title that
+ * cannot be found in the spec as a string literal fails the whole call, before anything is saved.
+ */
+export function linkLibrarySpecs(run: Run, spec: string, links: { code: string; testTitle: string }[]): { templateId: number; codes: string[]; titles: Record<string, string> } {
+  const titles: Record<string, string> = {};
+  let text = spec;
+  for (const l of links) {
+    // Result titles can carry describe() prefixes ("PR #811 › TC4 …"); the test() literal is the last part.
+    const own = l.testTitle.split(' › ').at(-1)!.trim();
+    if (own.includes(l.code)) {
+      titles[l.code] = own;
+      continue;
+    }
+    const tagged = /^TC\d+\b/.test(own) ? own.replace(/^(TC\d+)\b\s*(\[[^\]]*\])?\s*/, `$1 [LIB ${l.code}] `) : `${l.code} — ${own}`;
+    const quoted = [`'${own}'`, `"${own}"`, `\`${own}\``].find((q) => text.includes(q));
+    if (!quoted) throw new Error(`test "${own}" is not in run #${run.id}'s spec`);
+    text = text.split(quoted).join(quoted[0] + tagged + quoted[0]);
+    titles[l.code] = tagged;
+  }
+  const codes = links.map((l) => l.code);
+  const name =
+    codes.length === 1
+      ? `${codes[0]} — ${titles[codes[0]].replace(/^TC\d+\s*\[[^\]]*\]\s*/, '')}`
+      : `Library: ${codes.length} cases (${codes.slice(0, 4).join(', ')}${codes.length > 4 ? ', …' : ''})`;
+  const saved = saveTemplate({
+    name: name.slice(0, 200),
+    description: `Approved for the test library from run #${run.id} (probe-coder design-log/074): the saved spec of ${codes.join(', ')}.`,
+    instruction: run.instruction,
+    base_url: run.base_url,
+    spec: text,
+    variables: run.variables,
+  });
+  const before = librarySpecs(codes);
+  const upsert = qaDb.prepare(
+    `INSERT INTO library_specs (code, template_id, run_id, test_title, saved_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(code) DO UPDATE SET template_id = excluded.template_id, run_id = excluded.run_id, test_title = excluded.test_title, saved_at = excluded.saved_at`,
+  );
+  const at = now();
+  for (const c of codes) upsert.run(c, saved.id, run.id, titles[c], at);
+  const still = qaDb.prepare('SELECT 1 FROM library_specs WHERE template_id = ? LIMIT 1');
+  for (const old of new Set([...before.values()].map((b) => b.templateId)))
+    if (old !== saved.id && !still.get(old)) deleteTemplate(old);
+  return { templateId: saved.id, codes, titles };
+}
+
 /** A template deleted by hand drops its library links, so no case points at a missing spec. */
 export function forgetTemplateSpecs(templateId: number) {
   qaDb.prepare('DELETE FROM library_specs WHERE template_id = ?').run(templateId);

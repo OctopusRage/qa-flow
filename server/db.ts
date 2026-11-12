@@ -51,6 +51,9 @@ const runCols = (db.prepare('PRAGMA table_info(runs)').all() as { name: string }
 if (!runCols.includes('source')) db.exec("ALTER TABLE runs ADD COLUMN source TEXT NOT NULL DEFAULT 'ui'");
 if (!runCols.includes('tokens')) db.exec('ALTER TABLE runs ADD COLUMN tokens TEXT');
 if (!runCols.includes('library')) db.exec("ALTER TABLE runs ADD COLUMN library TEXT NOT NULL DEFAULT '[]'");
+// 0 = a passing generate run does NOT save library specs on its own: a QA approves first
+// (probe-coder design-log/074) and the approval links them through POST /api/library/link.
+if (!runCols.includes('save_library')) db.exec('ALTER TABLE runs ADD COLUMN save_library INTEGER NOT NULL DEFAULT 1');
 
 // Test library specs: the current passing spec of each library case, kept as an ordinary
 // template so it replays like any other. One row per QTM code; a newer passing run of the case
@@ -105,6 +108,8 @@ export type Run = {
   tokens: TokenUsage | null;
   /** Library cases to replay from their saved spec before the rest runs (probe-coder design-log/066). */
   library: LibraryRef[];
+  /** 0: leave library specs alone after a pass; the approval saves them (probe-coder design-log/074). */
+  save_library: number;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -315,12 +320,12 @@ export function getRun(id: number): Run | undefined {
   return r && toRun(r);
 }
 
-export function createRun(r: Pick<Run, 'template_id' | 'name' | 'mode' | 'base_url' | 'instruction' | 'variables' | 'source'> & { library?: LibraryRef[] }): Run {
+export function createRun(r: Pick<Run, 'template_id' | 'name' | 'mode' | 'base_url' | 'instruction' | 'variables' | 'source'> & { library?: LibraryRef[]; saveLibrary?: boolean }): Run {
   const res = db
     .prepare(
-      "INSERT INTO runs (template_id, name, mode, base_url, instruction, variables, source, library, status, created_at) VALUES (?,?,?,?,?,?,?,?,'queued',?)",
+      "INSERT INTO runs (template_id, name, mode, base_url, instruction, variables, source, library, save_library, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,'queued',?)",
     )
-    .run(r.template_id, r.name, r.mode, r.base_url, r.instruction, JSON.stringify(r.variables), r.source, JSON.stringify(r.library ?? []), now());
+    .run(r.template_id, r.name, r.mode, r.base_url, r.instruction, JSON.stringify(r.variables), r.source, JSON.stringify(r.library ?? []), r.saveLibrary === false ? 0 : 1, now());
   return getRun(Number(res.lastInsertRowid))!;
 }
 

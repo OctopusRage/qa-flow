@@ -358,7 +358,9 @@ function finishRun(runId: number, run: Run, dir: string, lib: LibraryPhase, flow
     error: s.total === 0 ? result.error ?? 'No tests ran' : null,
   });  // Library cases whose test passed keep this spec as a template (replay with no AI, download).
   try {
-    const kept = saveLibrarySpecs(run, result, join(dir, 'flow.spec.ts'));
+    // probe-coder design-log/074: a run started with saveLibrary: false waits for a QA's approval.
+    const kept = run.save_library === 0 ? null : saveLibrarySpecs(run, result, join(dir, 'flow.spec.ts'));
+    if (run.save_library === 0 && passed) log(runId, '📗 Test library: not saved here — a QA approves which cases keep this spec');
     if (kept) log(runId, `📗 Test library: spec saved as template #${kept.templateId} for ${kept.codes.join(', ')}`);
   } catch (e) {
     log(runId, `⚠ Test library: could not save the spec (${e instanceof Error ? e.message : String(e)})`);

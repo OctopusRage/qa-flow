@@ -3,7 +3,7 @@ import fastifyStatic from '@fastify/static';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { resolveKnowledgeDir, summarizeKnowledge } from './knowledge.ts';
-import { caseDetail, featureCases, forgetTemplateSpecs, hasLibrary, libraryInstruction, librarySpecLinks, restoreSpecs, libraryStatus, libraryTree, searchCases } from './library.ts';
+import { caseDetail, featureCases, forgetTemplateSpecs, hasLibrary, libraryInstruction, librarySpecLinks, linkLibrarySpecs, restoreSpecs, libraryStatus, libraryTree, searchCases } from './library.ts';
 import {
   ROOT,
   RUNS_DIR,
@@ -177,6 +177,20 @@ app.post('/api/library/restore', async () => {
   if (!dir) throw new HttpError(400, 'No knowledge pack configured (Settings › Knowledge pack)');
   return restoreSpecs(dir);
 });
+// A QA approved keeping a run's spec for these cases (probe-coder design-log/074).
+app.post('/api/library/link', async (req) => {
+  const b = req.body as { runId?: number; links?: { code?: string; testTitle?: string }[] };
+  const run = mustRun(Number(b.runId));
+  const links = (b.links ?? []).filter((l) => /^QTC-[A-Z]+-\d+$/.test(String(l.code)) && String(l.testTitle ?? '').trim());
+  if (!links.length) throw new HttpError(400, 'links: [{code, testTitle}] required');
+  const spec = join(runDir(run.id), 'flow.spec.ts');
+  if (!existsSync(spec)) throw new HttpError(409, `Run #${run.id} has no flow.spec.ts`);
+  try {
+    return linkLibrarySpecs(run, readFileSync(spec, 'utf8'), links.map((l) => ({ code: String(l.code), testTitle: String(l.testTitle) })));
+  } catch (e) {
+    throw new HttpError(409, e instanceof Error ? e.message : String(e));
+  }
+});
 app.get('/api/library/tree', async () => (needLibrary(), libraryTree()));
 app.get('/api/library/features/:id', async (req) => (needLibrary(), featureCases((req.params as { id: string }).id)));
 app.get('/api/library/tc/:code', async (req) => {
@@ -280,6 +294,8 @@ app.post('/api/runs', async (req) => {
     instruction?: string;
     variables?: Variable[];
     library?: LibraryRef[];
+    /** false: don't save library specs after a pass; a QA approves first (probe-coder design-log/074). */
+    saveLibrary?: boolean;
   };
   const template = b.templateId ? getTemplate(b.templateId) : undefined;
   if (b.templateId && !template) throw new HttpError(404, 'Template not found');
@@ -298,6 +314,7 @@ app.post('/api/runs', async (req) => {
     variables: (b.variables ?? []).filter((v) => v.key?.trim()),
     source: sourceOf(req),
     library: libraryRefs(b.library),
+    saveLibrary: b.saveLibrary !== false,
   });
   rememberBaseUrl(baseUrl);
   enqueue(run.id);
